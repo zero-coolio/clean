@@ -101,7 +101,7 @@ def main():
     for dirpath, dirnames, filenames in os.walk(intake_root):
         for filename in filenames:
             file_path = os.path.join(dirpath, filename)
-            if filename.lower().endswith(('.mkv', '.mp4', '.avi', '.mov')):
+            if filename.lower().endswith(('.mkv', '.mp4', '.avi', '.mov', '.nfo', '.txt', '.jpg', '.png', '.ds_store')):
                 process_file(file_path, intake_root, args.dry_run)
 
     process_sidecar_files(intake_root, args.dry_run)
