@@ -54,7 +54,7 @@ def process_file(file_path, intake_root, dry_run):
     dest_path = os.path.join(dest_dir, new_filename)
 
     if os.path.abspath(file_path) == os.path.abspath(dest_path):
-        logger.info(f"SKIPPED: Already correctly placed: {file_path}")
+        #logger.debug(f"SKIPPED: Already correctly placed: {file_path}")
         return
 
     if os.path.exists(dest_path):
@@ -79,6 +79,9 @@ def process_sidecar_files(intake_root, dry_run):
                     if not dry_run:
                         os.makedirs(dest_dir, exist_ok=True)
                         shutil.move(srt_path, dest_path)
+                else:
+                    logger.error(f"MOVE SIDECAR FAILED: '{show} {season} {episode} - {dirpath} {filename}'")
+
 
 def cleanup_empty_dirs(root_path, dry_run):
     for dirpath, dirnames, filenames in os.walk(root_path, topdown=False):
