@@ -3,6 +3,8 @@ import re
 import shutil
 import argparse
 import logging
+import shutil
+
 
 # Setup logger
 logger = logging.getLogger("tv_processor")
@@ -45,20 +47,27 @@ def process_file(file_path, intake_root, dry_run):
     show, season, episode = parse_tv_filename(filename)
 
     if not show or not season or not episode:
-        logger.warning(f"SKIPPED: Could not parse TV file: {file_path}")
+        logger.warning(f"SKIPPED: Could not parse TV file: {file_path} -{show} {season} {episode}")
         return
 
     ext = os.path.splitext(filename)[1]
     new_filename = f"{show} S{season}E{episode}{ext}"
     dest_dir = os.path.join(intake_root, show, f"Season {season}")
     dest_path = os.path.join(dest_dir, new_filename)
+    abs_orig = os.path.abspath(file_path)
+    abs_dest = os.path.abspath(dest_path)
+    eq = abs_orig.lower() == abs_dest.lower()
 
-    if os.path.abspath(file_path) == os.path.abspath(dest_path):
+    if (eq):
         #logger.debug(f"SKIPPED: Already correctly placed: {file_path}")
         return
 
     if os.path.exists(dest_path):
-        logger.warning(f"SKIPPED: Destination file already exists: {dest_path}")
+        logger.warning(f"Deleting Origin File: Destination file already exists: {dest_path}")
+        try:
+            os.remove(file_path)
+        except Exception as e:
+            print(f"An error occurred: {e}")
         return
 
     logger.info(f"MOVE: '{file_path}' -> '{dest_path}'")
@@ -90,7 +99,8 @@ def cleanup_empty_dirs(root_path, dry_run):
         if not visible_dirs and not visible_files:
             logger.info(f"DELETE EMPTY DIR: {dirpath}")
             if not dry_run:
-                os.rmdir(dirpath)
+                #os.rmdir(dirpath)
+                shutil.rmtree(dirpath)
 
 def main():
     parser = argparse.ArgumentParser(description="TV File Processor")
@@ -100,6 +110,8 @@ def main():
 
     intake_root = os.path.abspath(args.directory)
     logger.info(f"START PROCESSING: {intake_root}")
+
+    cleanup_empty_dirs(intake_root, args.dry_run)
 
     for dirpath, dirnames, filenames in os.walk(intake_root):
         for filename in filenames:
