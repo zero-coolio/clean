@@ -1,127 +1,33 @@
-import os
-import re
-import shutil
+#!/usr/bin/env python3
+"""
+Runtime entrypoint for Clean-TV.
+
+Usage:
+  python -m src.Main --directory "/path/to/intake" [--commit] [--plan] [--undo JOURNAL] [--quarantine DIR]
+"""
+from __future__ import annotations
 import argparse
-import logging
-import shutil
+from pathlib import Path
+from src.service.clean_service import CleanService
 
-
-# Setup logger
-logger = logging.getLogger("tv_processor")
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-
-def parse_tv_filename(filename):
-    pattern = r'^(?P<show>.*?)(?:[\.\s\-_]*)(?:S(?P<season>\d{1,2})E(?P<episode>\d{1,2})).*'
-    match = re.search(pattern, filename, re.IGNORECASE)
-    if not match:
-        return None, None, None
-
-    raw_show = match.group('show')
-    season = match.group('season').zfill(2)
-    episode = match.group('episode').zfill(2)
-
-    show = re.sub(r'[\._\-]', ' ', raw_show).strip()
-    show = re.sub(r'\s+', ' ', show)
-
-    return show, season, episode
-
-def process_file(file_path, intake_root, dry_run):
-    filename = os.path.basename(file_path)
-
-    if filename.lower().startswith("sample"):
-        logger.info(f"DELETE SAMPLE FILE: {file_path}")
-        if not dry_run:
-            os.remove(file_path)
-        return
-
-    if filename.lower().endswith(('.nfo', '.txt', '.jpg', '.png', '.ds_store')):
-        logger.info(f"DELETE AUXILIARY FILE: {file_path}")
-        if not dry_run:
-            os.remove(file_path)
-        return
-
-    show, season, episode = parse_tv_filename(filename)
-
-    if not show or not season or not episode:
-        logger.warning(f"SKIPPED: Could not parse TV file: {file_path} -{show} {season} {episode}")
-        return
-
-    ext = os.path.splitext(filename)[1]
-    new_filename = f"{show} S{season}E{episode}{ext}"
-    dest_dir = os.path.join(intake_root, show, f"Season {season}")
-    dest_path = os.path.join(dest_dir, new_filename)
-    abs_orig = os.path.abspath(file_path)
-    abs_dest = os.path.abspath(dest_path)
-    eq = abs_orig.lower() == abs_dest.lower()
-
-    if (eq):
-        #logger.debug(f"SKIPPED: Already correctly placed: {file_path}")
-        return
-
-    if os.path.exists(dest_path):
-        logger.warning(f"Deleting Origin File: Destination file already exists: {dest_path}")
-        try:
-            os.remove(file_path)
-        except Exception as e:
-            print(f"An error occurred: {e}")
-        return
-
-    logger.info(f"MOVE: '{file_path}' -> '{dest_path}'")
-    if not dry_run:
-        os.makedirs(dest_dir, exist_ok=True)
-        shutil.move(file_path, dest_path)
-
-def process_sidecar_files(intake_root, dry_run):
-    for dirpath, dirnames, filenames in os.walk(intake_root):
-        for filename in filenames:
-            if filename.lower().endswith('.srt'):
-                srt_path = os.path.join(dirpath, filename)
-                show, season, episode = parse_tv_filename(filename)
-                if show and season and episode:
-                    dest_dir = os.path.join(intake_root, show, f"Season {season}")
-                    dest_path = os.path.join(dest_dir, filename)
-                    logger.info(f"MOVE SIDECAR: '{srt_path}' -> '{dest_path}'")
-                    if not dry_run:
-                        os.makedirs(dest_dir, exist_ok=True)
-                        shutil.move(srt_path, dest_path)
-                else:
-                    logger.error(f"MOVE SIDECAR FAILED: '{show} {season} {episode} - {dirpath} {filename}'")
-
-
-def cleanup_empty_dirs(root_path, dry_run):
-    for dirpath, dirnames, filenames in os.walk(root_path, topdown=False):
-        visible_files = [f for f in filenames if not f.startswith('.')]
-        visible_dirs = [d for d in dirnames if not d.startswith('.')]
-        if not visible_dirs and not visible_files:
-            logger.info(f"DELETE EMPTY DIR: {dirpath}")
-            if not dry_run:
-                #os.rmdir(dirpath)
-                shutil.rmtree(dirpath)
+def parse_args():
+    ap = argparse.ArgumentParser(description="Safely organize TV media (Clean-TV)")
+    ap.add_argument("--directory", "-d", required=True, help="Root directory to process")
+    ap.add_argument("--commit", action="store_true", help="Apply changes (omit for dry-run)")
+    ap.add_argument("--plan", action="store_true", help="Write journal only (no changes)")
+    ap.add_argument("--undo", metavar="JOURNAL", help="Undo from journal file")
+    ap.add_argument("--quarantine", help="Quarantine directory for sample files")
+    return ap.parse_args()
 
 def main():
-    parser = argparse.ArgumentParser(description="TV File Processor")
-    parser.add_argument('--directory', required=True, help='Root directory to process')
-    parser.add_argument('--dry-run', action='store_true', help='Simulate actions without making changes')
-    args = parser.parse_args()
+    args = parse_args()
+    service = CleanService()
+    if args.undo:
+        service.undo_from_journal(Path(args.undo).expanduser().resolve())
+        return
+    root = Path(args.directory).expanduser().resolve()
+    quarantine = Path(args.quarantine).expanduser().resolve() if args.quarantine else None
+    service.run(root=root, commit=args.commit, plan=args.plan, quarantine=quarantine)
 
-    intake_root = os.path.abspath(args.directory)
-    logger.info(f"START PROCESSING: {intake_root}")
-
-    cleanup_empty_dirs(intake_root, args.dry_run)
-
-    for dirpath, dirnames, filenames in os.walk(intake_root):
-        for filename in filenames:
-            file_path = os.path.join(dirpath, filename)
-            if filename.lower().endswith(('.mkv', '.mp4', '.avi', '.mov', '.nfo', '.txt', '.jpg', '.png', '.ds_store')):
-                process_file(file_path, intake_root, args.dry_run)
-
-    process_sidecar_files(intake_root, args.dry_run)
-    cleanup_empty_dirs(intake_root, args.dry_run)
-    logger.info("END TRANS")
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
