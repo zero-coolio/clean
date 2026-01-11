@@ -1,60 +1,108 @@
-# Clean-TV (Runtime Package)
+# Clean Media Organizer
 
-A safety-critical TV media organizer. It normalizes episode names, snaps to existing show/season folders case-insensitively, moves videos & sidecars, handles duplicates, and keeps an undo journal.
+Safety-critical media organizers for TV shows and Movies. Normalizes filenames, organizes into clean folder structures, handles duplicates, and keeps an undo journal.
+
+## Services
+
+### Clean-TV
+Organizes TV episodes into `Show Name/Season XX/Show.Name.SxxExx.ext` structure.
+
+### Clean-Movie
+Organizes movies into `Movie Title (Year)/Movie Title (Year).ext` structure.
 
 ## Layout
 ```
-clean-tv-runtime/
+clean/
 ├── src/
 │   ├── __init__.py
-│   └── Main.py
-├── service/
-│   ├── __init__.py
-│   └── clean_service.py
-└── utils/
-    ├── __init__.py
-    └── snapshot.py
+│   ├── Main.py           # TV entrypoint
+│   ├── MovieMain.py      # Movie entrypoint
+│   └── service/
+│       ├── __init__.py
+│       ├── clean_service.py        # TV service
+│       └── clean_movie_service.py  # Movie service
+├── scripts/
+│   ├── clean-tv.command
+│   └── clean-movie.command
+└── tests/
+    ├── test_clean_service.py
+    └── test_clean_movie_service.py
 ```
 
 ## Quick Start
+
+### TV Shows
 ```bash
 # Dry-run (no changes)
-python -m src.Main -d "/Volumes/Intake"
-
-# Plan only (write journal, no changes)
-python -m src.Main -d "/Volumes/Intake" --plan
+python -m src.Main -d "/Volumes/Seagate/seagate-qBittorrent"
 
 # Apply changes
-python -m src.Main -d "/Volumes/Intake" --commit
+python -m src.Main -d "/Volumes/Seagate/seagate-qBittorrent" --commit
 
-# Undo previously recorded moves
-python -m src.Main --undo "/Volumes/Intake/.clean-tv-journal-YYYYMMDD-HHMMSS.jsonl"
+# With quarantine for samples
+python -m src.Main -d "/Volumes/Seagate/seagate-qBittorrent" --commit --quarantine "/tmp/quarantine"
+```
+
+### Movies
+```bash
+# Dry-run (no changes)
+python -m src.MovieMain -d "/Volumes/Seagate/seagate-movie"
+
+# Apply changes
+python -m src.MovieMain -d "/Volumes/Seagate/seagate-movie" --commit
+
+# With quarantine for samples/trailers
+python -m src.MovieMain -d "/Volumes/Seagate/seagate-movie" --commit --quarantine "/tmp/quarantine"
 ```
 
 ### Options
-- `--quarantine DIR` : move files starting with `sample/proof/trailer` into DIR
-- `--commit`         : actually apply changes (omit for dry-run default)
-- `--plan`           : write a journal without making changes
-- `--undo FILE`      : undo moves recorded in a prior journal
+| Option | Description |
+|--------|-------------|
+| `--directory`, `-d` | Root directory to process (required) |
+| `--commit` | Apply changes (omit for dry-run) |
+| `--plan` | Write journal without making changes |
+| `--quarantine DIR` | Move samples/trailers to DIR instead of deleting |
+| `--undo FILE` | (TV only) Undo from journal file |
 
-## Snapshot Utility
-Create a JSON or table snapshot for training/diagnosing filename patterns.
+## What Each Service Does
+
+### Clean-TV
+- Parses episode patterns: `SxxExx`, `1x01`
+- Creates structure: `Show Name/Season XX/Show.Name.SxxExx.ext`
+- Moves video files (.mkv, .mp4, .avi, .mov)
+- Moves English subtitles, deletes non-English in release folders
+- Deletes: samples, proofs, trailers, images, RAR files, .DS_Store
+- Cleans up empty directories and "screens" folders
+
+### Clean-Movie
+- Parses movie patterns: `Movie.Name.Year.Quality...` or `Movie Name (Year)`
+- Creates structure: `Movie Title (Year)/Movie Title (Year).ext`
+- Moves video files (.mkv, .mp4, .avi, .mov, .m4v, .wmv)
+- Moves English subtitles with language tags preserved
+- Deletes: samples, proofs, trailers, images, RAR/PAR files
+- Cleans up empty directories and "screens" folders
+
+## Running Scripts
+
+Double-click the `.command` files in Finder:
+- `scripts/clean-tv.command` - Process TV directory
+- `scripts/clean-movie.command` - Process movie directory
+
+Make executable first:
+```bash
+chmod +x scripts/*.command
+```
+
+## Running Tests
 
 ```bash
-# JSON to stdout
-python -m utils.snapshot -d "/Volumes/Intake"
-
-# Table printout
-python -m utils.snapshot -d "/Volumes/Intake" --print
-
-# Save to a file
-python -m utils.snapshot -d "/Volumes/Intake" --print -o ./snapshots/2025-11-06.txt
+cd /path/to/clean
+pytest tests/ -v
 ```
 
 ## Safety Notes
-- Moves are cross-device safe. Duplicates (same content) delete the source.
-- Sidecars are renamed to match normalized video stems and keep language tags.
-- Existing destination files get an automatic `(alt)`, `(alt 2)`, ... suffix.
-- Journals are written to the root you process for easy undo.
-```
-
+- **Dry-run by default** - Always preview with no `--commit` flag first
+- **Cross-device safe** - Uses copy+delete if rename fails
+- **Duplicate handling** - Same content = delete source; different = create `(alt)` suffix
+- **Journals** - Written to root directory for tracking/undo
+- **Sidecar renaming** - Subtitles renamed to match video, language tags preserved

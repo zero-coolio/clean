@@ -485,6 +485,7 @@ class CleanService:
 
         self._logger.info("END TRANS")
 
+
     def _report_remaining_folders(self) -> None:
         """Report which non-clean-format or suspicious folders still exist after cleanup."""
         if not self._source_folders:
