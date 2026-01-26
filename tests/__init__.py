@@ -1,1 +1,1 @@
-# tests for Clean-TV core
+"""Clean Media test suite."""
