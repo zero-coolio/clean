@@ -181,27 +181,32 @@ def safe_move(
     commit: bool,
     journal: list[dict],
     logger=None,
+    touch_parent_depth: int = 2,
 ) -> None:
     """Safely move a file, using copy+delete if rename fails.
-    
+
     Args:
         src: Source file path.
         dst: Destination file path.
         commit: If False, only log the operation without executing.
         journal: List to append operation record to.
         logger: Optional logger for status messages.
-        
+        touch_parent_depth: How many levels up from the destination file to
+            touch the folder timestamp. Default is 2, which for TV shows
+            touches the show folder (root/ShowName/Season XX/file.mkv -> ShowName).
+            Set to 0 to disable.
+
     Raises:
         FileExistsError: If destination already exists.
     """
     if dst.exists():
         raise FileExistsError(f"Destination exists: {dst}")
-    
+
     if not commit:
         return
-    
+
     dst.parent.mkdir(parents=True, exist_ok=True)
-    
+
     try:
         os.rename(src, dst)
     except OSError:
@@ -209,8 +214,18 @@ def safe_move(
         with src.open("rb") as rf, dst.open("wb") as wf:
             shutil.copyfileobj(rf, wf)
         src.unlink(missing_ok=True)
-    
+
     journal.append({"op": "move", "src": str(src), "dst": str(dst)})
+
+    # Update the containing folder's timestamp
+    if touch_parent_depth > 0:
+        folder_to_touch = dst.parent
+        for _ in range(touch_parent_depth - 1):
+            if folder_to_touch.parent.exists():
+                folder_to_touch = folder_to_touch.parent
+            else:
+                break
+        touch_folder(folder_to_touch)
 
 
 def safe_delete(
@@ -289,6 +304,21 @@ def undo_from_journal(journal_path: Path, logger=None) -> None:
     
     if logger:
         logger.info("Undo complete from: %s", journal_path)
+
+
+def touch_folder(folder: Path) -> None:
+    """Update a folder's modification timestamp to current time.
+
+    This is useful for signaling to media servers (like Plex) that
+    content in this folder has changed.
+
+    Args:
+        folder: Path to the folder to touch.
+    """
+    if folder.exists() and folder.is_dir():
+        import time
+        current_time = time.time()
+        os.utime(folder, (current_time, current_time))
 
 
 def cleanup_empty_dirs(root: Path, commit: bool, logger=None) -> None:

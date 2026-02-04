@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Tests for CleanService (TV)."""
+import os
+import time
 import pytest
 from pathlib import Path
 
 from src.service.clean_service import CleanService, parse_episode_from_string
-from src.utils import is_english_subtitle
+from src.utils import is_english_subtitle, touch_folder, safe_move
 
 
 class TestParseEpisodeFromString:
@@ -205,3 +207,211 @@ class TestIsEnglishSubtitle:
 
     def test_non_subtitle_file(self) -> None:
         assert is_english_subtitle("movie.eng.txt") is False
+
+
+class TestTouchFolder:
+    """Tests for folder timestamp updates."""
+
+    def test_touch_folder_updates_mtime(self, tmp_path: Path) -> None:
+        """touch_folder updates the folder's modification time."""
+        folder = tmp_path / "test_folder"
+        folder.mkdir()
+
+        # Set an old timestamp
+        old_time = time.time() - 3600  # 1 hour ago
+        os.utime(folder, (old_time, old_time))
+
+        original_mtime = folder.stat().st_mtime
+        time.sleep(0.01)  # Ensure time passes
+
+        touch_folder(folder)
+
+        new_mtime = folder.stat().st_mtime
+        assert new_mtime > original_mtime
+
+    def test_touch_folder_nonexistent_does_nothing(self, tmp_path: Path) -> None:
+        """touch_folder on nonexistent path doesn't raise."""
+        nonexistent = tmp_path / "does_not_exist"
+        # Should not raise
+        touch_folder(nonexistent)
+
+    def test_touch_folder_on_file_does_nothing(self, tmp_path: Path) -> None:
+        """touch_folder on a file (not directory) doesn't update it."""
+        file_path = tmp_path / "test_file.txt"
+        file_path.write_text("test")
+
+        old_time = time.time() - 3600
+        os.utime(file_path, (old_time, old_time))
+        original_mtime = file_path.stat().st_mtime
+
+        touch_folder(file_path)
+
+        # File mtime should be unchanged since touch_folder only works on dirs
+        assert file_path.stat().st_mtime == original_mtime
+
+
+class TestSafeMoveTimestampUpdate:
+    """Tests for safe_move updating parent folder timestamps."""
+
+    def test_safe_move_updates_show_folder_timestamp(self, tmp_path: Path) -> None:
+        """Moving a file updates the show folder (2 levels up) timestamp."""
+        root = tmp_path / "media"
+        root.mkdir()
+
+        # Create source file
+        src = tmp_path / "source.mkv"
+        src.write_text("VIDEO DATA")
+
+        # Create destination structure
+        show_folder = root / "Show Name"
+        season_folder = show_folder / "Season 01"
+        season_folder.mkdir(parents=True)
+
+        # Set old timestamps on the show folder
+        old_time = time.time() - 3600
+        os.utime(show_folder, (old_time, old_time))
+        original_mtime = show_folder.stat().st_mtime
+
+        time.sleep(0.01)
+
+        # Move file
+        dst = season_folder / "Show.Name.S01E01.mkv"
+        journal: list[dict] = []
+        safe_move(src, dst, commit=True, journal=journal)
+
+        # Show folder timestamp should be updated
+        new_mtime = show_folder.stat().st_mtime
+        assert new_mtime > original_mtime
+
+    def test_safe_move_respects_touch_parent_depth(self, tmp_path: Path) -> None:
+        """touch_parent_depth controls which folder gets touched."""
+        root = tmp_path / "media"
+        root.mkdir()
+
+        # Create source file
+        src = tmp_path / "source.mkv"
+        src.write_text("VIDEO DATA")
+
+        # Create destination structure
+        show_folder = root / "Show Name"
+        season_folder = show_folder / "Season 01"
+        season_folder.mkdir(parents=True)
+
+        # Set old timestamps
+        old_time = time.time() - 3600
+        os.utime(show_folder, (old_time, old_time))
+        os.utime(season_folder, (old_time, old_time))
+
+        show_original_mtime = show_folder.stat().st_mtime
+        season_original_mtime = season_folder.stat().st_mtime
+
+        time.sleep(0.01)
+
+        # Move file with depth=1 (touch season folder, not show)
+        dst = season_folder / "Show.Name.S01E01.mkv"
+        journal: list[dict] = []
+        safe_move(src, dst, commit=True, journal=journal, touch_parent_depth=1)
+
+        # Season folder should be updated (depth=1)
+        assert season_folder.stat().st_mtime > season_original_mtime
+        # Show folder should NOT be updated
+        assert show_folder.stat().st_mtime == show_original_mtime
+
+    def test_safe_move_no_touch_when_depth_zero(self, tmp_path: Path) -> None:
+        """touch_parent_depth=0 disables explicit folder timestamp updates.
+
+        Note: The filesystem itself will still update the parent directory's
+        mtime when a file is added, so we test by checking that we DON'T
+        additionally touch a grandparent folder.
+        """
+        root = tmp_path / "media"
+        root.mkdir()
+        subdir = root / "subdir"
+        subdir.mkdir()
+
+        src = tmp_path / "source.mkv"
+        src.write_text("VIDEO DATA")
+
+        dst = subdir / "dest.mkv"
+
+        # Set old timestamps on root (grandparent of file)
+        old_time = time.time() - 3600
+        os.utime(root, (old_time, old_time))
+        original_root_mtime = root.stat().st_mtime
+
+        time.sleep(0.01)
+
+        journal: list[dict] = []
+        # With depth=0, we shouldn't touch any parent folders explicitly
+        safe_move(src, dst, commit=True, journal=journal, touch_parent_depth=0)
+
+        # Root folder (grandparent) should NOT be touched
+        # (filesystem updates immediate parent, but our code shouldn't touch grandparent)
+        assert root.stat().st_mtime == original_root_mtime
+
+    def test_safe_move_dry_run_no_touch(self, tmp_path: Path) -> None:
+        """Dry run (commit=False) doesn't touch folders."""
+        root = tmp_path / "media"
+        root.mkdir()
+
+        src = tmp_path / "source.mkv"
+        src.write_text("VIDEO DATA")
+
+        dst = root / "dest.mkv"
+
+        old_time = time.time() - 3600
+        os.utime(root, (old_time, old_time))
+        original_mtime = root.stat().st_mtime
+
+        time.sleep(0.01)
+
+        journal: list[dict] = []
+        safe_move(src, dst, commit=False, journal=journal)
+
+        # Folder timestamp should NOT be updated (dry run)
+        assert root.stat().st_mtime == original_mtime
+        # File should still exist at source
+        assert src.exists()
+
+
+class TestCleanServiceTimestampIntegration:
+    """Integration tests for timestamp updates during TV cleaning."""
+
+    def test_cleaning_updates_show_folder_timestamp(self, tmp_path: Path) -> None:
+        """Running CleanService updates the show folder's timestamp."""
+        root = tmp_path / "intake"
+        root.mkdir()
+
+        # Create wrapper folder with episode
+        wrapper = root / "Letterkenny.S05.1080p.HULU.WEBRip[rartv]"
+        wrapper.mkdir()
+
+        src_file = wrapper / "Letterkenny.S05E01.mkv"
+        src_file.write_text("FAKE_DATA")
+
+        # Run service to create the show folder structure
+        service = CleanService()
+        service.run(root=root, commit=True)
+
+        # Show folder should exist
+        show_folder = root / "Letterkenny"
+        assert show_folder.exists()
+
+        # Add another episode
+        wrapper2 = root / "Letterkenny.S05E02.720p.WEB"
+        wrapper2.mkdir()
+        src_file2 = wrapper2 / "Letterkenny.S05E02.mkv"
+        src_file2.write_text("FAKE_DATA_2")
+
+        # Set show folder timestamp to past
+        old_time = time.time() - 3600
+        os.utime(show_folder, (old_time, old_time))
+
+        time.sleep(0.01)
+
+        # Run service again
+        service.run(root=root, commit=True)
+
+        # Show folder timestamp should be updated
+        new_mtime = show_folder.stat().st_mtime
+        assert new_mtime > old_time
