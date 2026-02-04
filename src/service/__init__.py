@@ -7,13 +7,17 @@ from .clean_movie_service import (
     clean_movie_title,
     lookup_movie_year,
 )
+from .transcode_service import TranscodeService, check_ffmpeg, PRESETS
 
 __all__ = [
     "BaseCleanService",
     "CleanService",
     "CleanMovieService",
+    "TranscodeService",
     "parse_episode_from_string",
     "parse_movie_from_string",
     "clean_movie_title",
     "lookup_movie_year",
+    "check_ffmpeg",
+    "PRESETS",
 ]

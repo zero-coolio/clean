@@ -1,0 +1,15 @@
+# Large files to transcode - one path per line
+# Lines starting with # are comments
+# 
+# Run: ./transcode.command          (dry-run)
+# Run: ./transcode.command --commit (actual transcode)
+
+# Movies
+/Volumes/Seagate/seagate-movie/Mission Impossible The Final Reckoning (2025)/Mission Impossible The Final Reckoning (2025).mkv
+/Volumes/Seagate/seagate-movie/The Rock (1996)/The Rock (1996).mkv
+/Volumes/Seagate/seagate-movie/Kingsman The Golden Circle (2017)/Kingsman The Golden Circle (2017).mkv
+
+# TV
+/Volumes/Seagate/seagate-qBittorrent/Andor/Season 02/Andor.S02E04.mkv
+/Volumes/Seagate/seagate-qBittorrent/Severance/Season 02/Severance.S02E10.mkv
+/Volumes/Seagate/seagate-qBittorrent/The Pitt/Season 02/The.Pitt.S02E01.mkv

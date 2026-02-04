@@ -11,6 +11,7 @@ from logging import Logger
 from pathlib import Path
 
 from ..config import VIDEO_EXT, SAMPLE_PATTERNS
+from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
 from ..utils import (
     cleanup_empty_dirs,
     is_english_subtitle,
@@ -451,6 +452,9 @@ class BaseCleanService(ABC):
             if path.is_file():
                 self.process_file(path, root, commit, journal, quarantine, unexpected)
         
+        # Set audio/subtitle track defaults for MKV files
+        self._process_audio_tracks(root, commit)
+        
         # Cleanup
         cleanup_empty_dirs(root, commit, self._logger)
         self.track_folders_without_media(root)
@@ -469,4 +473,82 @@ class BaseCleanService(ABC):
             for item in unexpected:
                 self._logger.warning("UNEXPECTED: %s", item)
         
+        # Report large files that are transcode candidates
+        self._report_large_files(root)
+        
         self._logger.info("END")
+    
+    def _process_audio_tracks(self, root: Path, commit: bool) -> None:
+        """Set English audio as default and disable non-forced subtitles.
+        
+        Args:
+            root: Root directory to scan.
+            commit: If True, apply changes.
+        """
+        if not check_mkvtoolnix_installed():
+            self._logger.warning("mkvtoolnix not installed - skipping audio track defaults")
+            self._logger.warning("Install with: brew install mkvtoolnix")
+            return
+        
+        self._logger.info("")
+        self._logger.info("=== AUDIO/SUBTITLE TRACK DEFAULTS ===")
+        
+        processed = 0
+        updated = 0
+        
+        for path in root.rglob("*.mkv"):
+            if not path.is_file():
+                continue
+            
+            processed += 1
+            if set_track_defaults(path, self._logger, commit):
+                updated += 1
+        
+        if processed > 0:
+            self._logger.info("Processed %d MKV files, %d needed updates", processed, updated)
+        else:
+            self._logger.info("No MKV files found")
+        
+        self._logger.info("======================================")
+    
+    def _report_large_files(self, root: Path, threshold_gb: float = 4.0) -> None:
+        """Report video files above size threshold as transcode candidates.
+        
+        Args:
+            root: Root directory to scan.
+            threshold_gb: Size threshold in gigabytes.
+        """
+        threshold_bytes = int(threshold_gb * 1024 * 1024 * 1024)
+        large_files: list[tuple[Path, int]] = []
+        video_exts = self.get_video_extensions()
+        
+        for dirpath, _, filenames in os.walk(root):
+            for fn in filenames:
+                ext = Path(fn).suffix.lower()
+                if ext not in video_exts:
+                    continue
+                path = Path(dirpath) / fn
+                try:
+                    size = path.stat().st_size
+                    if size >= threshold_bytes:
+                        large_files.append((path, size))
+                except OSError:
+                    continue
+        
+        if not large_files:
+            return
+        
+        large_files.sort(key=lambda x: x[1], reverse=True)
+        
+        self._logger.info("")
+        self._logger.info("=== LARGE FILES (>%.1f GB) - TRANSCODE CANDIDATES ===", threshold_gb)
+        total_size = 0
+        for path, size in large_files:
+            size_gb = size / (1024 * 1024 * 1024)
+            total_size += size
+            self._logger.info("  %6.2f GB  %s", size_gb, path.name)
+        total_gb = total_size / (1024 * 1024 * 1024)
+        self._logger.info("---")
+        self._logger.info("  Total: %.2f GB across %d file(s)", total_gb, len(large_files))
+        self._logger.info("  Est. savings with HEVC transcode: ~%.0f-%.0f GB", total_gb * 0.4, total_gb * 0.6)
+        self._logger.info("================================================")
