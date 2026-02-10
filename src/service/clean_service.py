@@ -24,24 +24,30 @@ RE_X = re.compile(
     r"^(?P<show>.*?)[.\s\-_]*(?P<season>\d{1,2})[xX](?P<episode>\d{1,2})",
     re.IGNORECASE,
 )
+# "Season 2 Episode 5" format (spelled out)
+RE_SEASON_EPISODE = re.compile(
+    r"^(?P<show>.*?)[.\s\-_]*Season[.\s\-_]*(?P<season>\d{1,2})[.\s\-_]*Episode[.\s\-_]*(?P<episode>\d{1,2})",
+    re.IGNORECASE,
+)
 
 
 def parse_episode_from_string(s: str) -> tuple[str, str, str] | None:
     """Parse TV episode information from a string.
-    
+
     Handles common patterns:
     - Show.Name.S01E02...
     - Show Name - 1x02 - Episode Title
-    
+    - Show Name Season 2 Episode 5
+
     Args:
         s: Filename or folder name to parse.
-        
+
     Returns:
         Tuple of (show_name, season, episode) or None if unparseable.
         Season and episode are zero-padded to 2 digits.
     """
     name = normalize_unicode_separators(strip_noise_prefix(s))
-    match = RE_SXXEYY.search(name) or RE_X.search(name)
+    match = RE_SXXEYY.search(name) or RE_X.search(name) or RE_SEASON_EPISODE.search(name)
     
     if not match:
         return None
@@ -49,11 +55,14 @@ def parse_episode_from_string(s: str) -> tuple[str, str, str] | None:
     raw_show = match.group("show")
     season = match.group("season")
     episode = match.group("episode")
-    
+
     # Clean up show name
     show = re.sub(r"[._\-]+", " ", raw_show).strip()
     show = re.sub(r"\s+", " ", show)
-    
+
+    # Remove trailing year in parentheses like "(2023)"
+    show = re.sub(r"\s*\(\d{4}\)\s*$", "", show).strip()
+
     # Title case the show name
     show = show.title()
     
