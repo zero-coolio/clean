@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.nulleffect.clean-movie-watcher</string>
+    <string>com.nulleffect.clean-tv-watcher</string>
     
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/stephenleonard/git/nulleffect/CleanMedia/scripts/watch-movie.sh</string>
+        <string>/Users/stephenleonard/git/nulleffect/CleanMedia/cleanMedia/watch-tv.sh</string>
     </array>
     
     <key>RunAtLoad</key>
@@ -23,10 +23,10 @@
     </dict>
     
     <key>StandardOutPath</key>
-    <string>/Users/stephenleonard/git/nulleffect/CleanMedia/logs/launchd-movie-stdout.log</string>
+    <string>/Users/stephenleonard/git/nulleffect/CleanMedia/logs/launchd-stdout.log</string>
     
     <key>StandardErrorPath</key>
-    <string>/Users/stephenleonard/git/nulleffect/CleanMedia/logs/launchd-movie-stderr.log</string>
+    <string>/Users/stephenleonard/git/nulleffect/CleanMedia/logs/launchd-stderr.log</string>
     
     <key>WorkingDirectory</key>
     <string>/Users/stephenleonard/git/nulleffect/CleanMedia</string>

@@ -327,8 +327,9 @@ class BaseCleanService(ABC):
             else:
                 dest = self.build_sidecar_dest(root, parsed, name)
             
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            
+            if commit:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+
             # Already in correct location
             if same_path(path, dest):
                 self._logger.info("OK (already placed): %s", path)
@@ -340,12 +341,24 @@ class BaseCleanService(ABC):
                 safe_delete(path, commit, journal, self._logger)
                 return
             
-            # Handle destination conflict
+            # Handle destination conflict — keep the larger file
             if dest.exists():
-                alt = unique_path(dest)
-                self._logger.warning("DEST EXISTS, USING ALT: %s", alt)
-                dest = alt
-            
+                src_size = path.stat().st_size
+                dst_size = dest.stat().st_size
+                if src_size > dst_size:
+                    self._logger.warning(
+                        "CONFLICT: source larger (%d > %d bytes), replacing dest: %s",
+                        src_size, dst_size, dest,
+                    )
+                    safe_delete(dest, commit, journal, self._logger)
+                else:
+                    self._logger.warning(
+                        "CONFLICT: dest larger or equal (%d >= %d bytes), keeping dest, deleting source: %s",
+                        dst_size, src_size, path,
+                    )
+                    safe_delete(path, commit, journal, self._logger)
+                    return
+
             # Move the file
             self._logger.info("MOVE: %s -> %s", path, dest)
             if not self.is_clean_folder_name(path.parent.name):

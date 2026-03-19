@@ -60,27 +60,59 @@ def parse_episode_from_string(s: str) -> tuple[str, str, str] | None:
     show = re.sub(r"[._\-]+", " ", raw_show).strip()
     show = re.sub(r"\s+", " ", show)
 
-    # Remove trailing year in parentheses like "(2023)"
-    show = re.sub(r"\s*\(\d{4}\)\s*$", "", show).strip()
-
     # Title case the show name
     show = show.title()
-    
+
+    # Normalize bare year to parenthesized form: "Show Name 2002" → "Show Name (2002)"
+    show = re.sub(r"\s+((?:19|20)\d{2})$", r" (\1)", show)
+
+    # If no year in show name, check remainder of filename (e.g. Show.S01E01(2002).mkv)
+    if not re.search(r"(?:19|20)\d{2}", show):
+        remainder = name[match.end():]
+        year_match = re.search(r"[(\s._\-]((?:19|20)\d{2})[)\s._\-]", remainder)
+        if year_match:
+            show = f"{show} ({year_match.group(1)})"
+
     return show, season.zfill(2), episode.zfill(2)
 
 
 class CleanService(BaseCleanService):
     """Service to clean and organize TV show files."""
-    
+
     SERVICE_NAME = "clean-tv"
-    
+
     def __init__(self) -> None:
         super().__init__(get_logger("clean-tv"))
-    
+
     # =========================================================================
     # Abstract method implementations
     # =========================================================================
-    
+
+    def _try_parse_media(self, path: Path, root: Path) -> tuple | None:
+        """Parse media info, then enrich show name with year from existing folder."""
+        parsed = super()._try_parse_media(path, root)
+        if parsed is None:
+            return None
+        show, season, episode = parsed
+        if not re.search(r"(?:19|20)\d{2}", show):
+            show = self._resolve_show_with_year(show, root)
+        return show, season, episode
+
+    def _resolve_show_with_year(self, show: str, root: Path) -> str:
+        """Return show name with year if a matching versioned folder exists in root."""
+        if not root.is_dir():
+            return show
+        pattern = re.compile(
+            r"^" + re.escape(show) + r"\s*\(?((?:19|20)\d{2})\)?$",
+            re.IGNORECASE,
+        )
+        for entry in root.iterdir():
+            if entry.is_dir():
+                m = pattern.match(entry.name)
+                if m:
+                    return f"{show} ({m.group(1)})"
+        return show
+
     def parse_media_info(self, name: str) -> tuple[str, str, str] | None:
         """Parse episode info from a filename or folder name."""
         return parse_episode_from_string(name)

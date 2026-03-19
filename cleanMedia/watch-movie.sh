@@ -20,6 +20,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 WATCH_DIR="${CLEAN_MOVIE_DIR:-/Volumes/Seagate/seagate-movie}"
 LOG_FILE="$SCRIPT_DIR/../logs/watch-movie.log"
 LOCK_FILE="$SCRIPT_DIR/../logs/.watch-movie.lock"
+PENDING_FILE="$SCRIPT_DIR/../logs/.watch-movie-pending.txt"
 DEBOUNCE_SECONDS=30
 LAST_RUN=0
 
@@ -47,10 +48,17 @@ run_clean() {
         return
     fi
     
-    # Lock: skip if already running
+    # Lock: skip if already running (validate PID is still alive)
     if [ -f "$LOCK_FILE" ]; then
-        log "Skipping (already running)"
-        return
+        local lock_pid
+        lock_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+        if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+            log "Skipping (already running, PID $lock_pid)"
+            return
+        else
+            log "Removing stale lock file (PID $lock_pid no longer exists)"
+            rm -f "$LOCK_FILE"
+        fi
     fi
     
     # Create lock file with PID
@@ -59,8 +67,28 @@ run_clean() {
     
     LAST_RUN=$now
     log "Running clean-movie..."
-    notify "Clean-Movie" "Processing new files..."
-    
+
+    # Build file list from accumulated pending files
+    local file_msg="Processing new files..."
+    if [ -f "$PENDING_FILE" ] && [ -s "$PENDING_FILE" ]; then
+        local names
+        names=$(sort -u "$PENDING_FILE" | xargs -I{} basename "{}" | head -5)
+        local total
+        total=$(sort -u "$PENDING_FILE" | wc -l | tr -d ' ')
+        local shown
+        shown=$(echo "$names" | wc -l | tr -d ' ')
+        local joined
+        joined=$(echo "$names" | paste -sd ', ' -)
+        if [ "$total" -gt "$shown" ]; then
+            file_msg="$joined and $((total - shown)) more"
+        else
+            file_msg="$joined"
+        fi
+        > "$PENDING_FILE"
+    fi
+
+    notify "Clean-Movie" "Processing: $file_msg"
+
     # Run clean-movie
     cd "$SCRIPT_DIR/.."
     export PYTHONPATH="$SCRIPT_DIR/.."
@@ -126,9 +154,12 @@ run_clean
 
 # Watch for changes
 # -r: recursive
-# -L: follow symlinks  
-# --event Created, MovedTo, Renamed: new/moved/renamed files
-fswatch -r -L --event Created --event MovedTo --event Renamed "$WATCH_DIR" | while read -r file; do
+# -L: follow symlinks
+# --event Created, Updated, MovedTo, Renamed: new, touched, moved/renamed files
+fswatch -r -L \
+    --event Created --event Updated --event MovedTo --event Renamed \
+    "$WATCH_DIR" | while read -r file; do
     log "Change detected: $file"
+    echo "$file" >> "$PENDING_FILE"
     run_clean
 done
