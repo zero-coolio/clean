@@ -234,8 +234,10 @@ def safe_delete(
     journal: list[dict],
     logger=None,
 ) -> None:
-    """Safely delete a file or directory.
-    
+    """Move a file or directory to the system Trash instead of permanent deletion.
+
+    Falls back to permanent deletion if send2trash is unavailable.
+
     Args:
         path: Path to delete.
         commit: If False, only log the operation without executing.
@@ -244,13 +246,19 @@ def safe_delete(
     """
     if not commit:
         return
-    
-    if path.is_dir():
-        shutil.rmtree(path, ignore_errors=True)
-    else:
-        path.unlink(missing_ok=True)
-    
-    journal.append({"op": "delete", "path": str(path)})
+
+    try:
+        from send2trash import send2trash
+        send2trash(str(path))
+        journal.append({"op": "trash", "path": str(path)})
+    except ImportError:
+        if logger:
+            logger.warning("send2trash not available — falling back to permanent delete: %s", path)
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+        journal.append({"op": "delete", "path": str(path)})
 
 
 def undo_from_journal(journal_path: Path, logger=None) -> None:
@@ -297,10 +305,10 @@ def undo_from_journal(journal_path: Path, logger=None) -> None:
                 if logger:
                     logger.warning("UNDO SKIP (dst missing): %s", dst)
         
-        elif op == "delete":
+        elif op in ("delete", "trash"):
             path = entry.get("path")
             if logger:
-                logger.warning("CANNOT UNDO DELETE: %s", path)
+                logger.warning("CANNOT UNDO %s: %s", op.upper(), path)
     
     if logger:
         logger.info("Undo complete from: %s", journal_path)
