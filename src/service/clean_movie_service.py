@@ -198,14 +198,27 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
 # Movie Service
 # ============================================================================
 
+_RE_SEASON_FOLDER = re.compile(r"^Season\s+\d+$", re.IGNORECASE)
+
+
 class CleanMovieService(BaseCleanService):
     """Service to clean and organize movie files."""
-    
+
     SERVICE_NAME = "clean-movie"
-    
+
     def __init__(self) -> None:
         super().__init__(get_logger("clean-movie"))
         self._use_tmdb_lookup = False
+
+    def process_file(self, path, root, commit, journal, quarantine, unexpected, dest=None):
+        """Skip files already organized into TV Season folders."""
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            rel = path
+        if any(_RE_SEASON_FOLDER.match(part) for part in rel.parts):
+            return
+        super().process_file(path, root, commit, journal, quarantine, unexpected, dest)
     
     # =========================================================================
     # Abstract method implementations
