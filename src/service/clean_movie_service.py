@@ -342,18 +342,21 @@ class CleanMovieService(BaseCleanService):
         plan: bool = False,
         quarantine: Path | None = None,
         lookup: bool = False,
+        dest: Path | None = None,
     ) -> None:
         """Run the movie cleaning process.
-        
+
         Args:
-            root: Root directory to process.
+            root: Root directory to scan for files.
             commit: If True, apply changes. If False, dry-run.
             plan: If True, write journal even in dry-run mode.
             quarantine: Optional path to move samples instead of deleting.
             lookup: If True, use TMDB API to look up missing years.
+            dest: Optional separate destination root (e.g. seagate-movie)
+                  when scanning a shared download directory.
         """
         self._use_tmdb_lookup = lookup
-        super().run(root, commit, plan, quarantine)
+        super().run(root, commit, plan, quarantine, dest)
     
     # =========================================================================
     # Legacy compatibility methods

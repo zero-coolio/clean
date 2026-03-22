@@ -15,7 +15,8 @@ from src.service.clean_movie_service import CleanMovieService
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Safely organize movie media (Clean-Movie)")
-    ap.add_argument("--directory", "-d", required=True, help="Root directory to process")
+    ap.add_argument("--directory", "-d", required=True, help="Root directory to scan")
+    ap.add_argument("--dest", help="Destination library root (default: same as --directory)")
     ap.add_argument("--commit", action="store_true", help="Apply changes (omit for dry-run)")
     ap.add_argument("--plan", action="store_true", help="Write journal only (no changes)")
     ap.add_argument("--quarantine", help="Quarantine directory for sample/trailer files")
@@ -31,12 +32,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     service = CleanMovieService()
-    
+
     if args.undo:
         service.undo(Path(args.undo).expanduser().resolve())
         return
-    
+
     root = Path(args.directory).expanduser().resolve()
+    dest = Path(args.dest).expanduser().resolve() if args.dest else None
     quarantine = Path(args.quarantine).expanduser().resolve() if args.quarantine else None
     service.run(
         root=root,
@@ -44,6 +46,7 @@ def main() -> None:
         plan=args.plan,
         quarantine=quarantine,
         lookup=args.lookup,
+        dest=dest,
     )
 
 

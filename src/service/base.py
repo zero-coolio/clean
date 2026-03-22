@@ -229,6 +229,7 @@ class BaseCleanService(ABC):
         journal: list[dict],
         quarantine: Path | None,
         unexpected: list[str],
+        dest: Path | None = None,
     ) -> None:
         """Process a single file.
         
@@ -302,11 +303,11 @@ class BaseCleanService(ABC):
         
         # Try to parse media info
         parsed = self._try_parse_media(path, root)
-        
+
         # Handle video and sidecar files
         video_exts = self.get_video_extensions()
         sidecar_exts = self.get_sidecar_extensions()
-        
+
         if ext in video_exts or ext in sidecar_exts:
             # Filter non-English subtitles in release folders
             if ext in sidecar_exts and self._is_in_release_context(path):
@@ -315,17 +316,18 @@ class BaseCleanService(ABC):
                     safe_delete(path, commit, journal, self._logger)
                     unexpected.append(f"{path} (non-English subtitle)")
                     return
-            
+
             if not parsed:
                 self._logger.warning("SKIP (unparsed media): %s", path)
                 unexpected.append(f"{path} (unparsed media)")
                 return
-            
-            # Build destination
+
+            # Build destination (use explicit dest root if provided, else same as source root)
+            dest_root = dest if dest is not None else root
             if ext in video_exts:
-                dest = self.build_video_dest(root, parsed, ext)
+                dest = self.build_video_dest(dest_root, parsed, ext)
             else:
-                dest = self.build_sidecar_dest(root, parsed, name)
+                dest = self.build_sidecar_dest(dest_root, parsed, name)
             
             if commit:
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -435,35 +437,40 @@ class BaseCleanService(ABC):
         commit: bool = False,
         plan: bool = False,
         quarantine: Path | None = None,
+        dest: Path | None = None,
     ) -> None:
         """Run the cleaning process.
-        
+
         Args:
-            root: Root directory to process.
+            root: Root directory to scan for files.
             commit: If True, apply changes. If False, dry-run.
             plan: If True, write journal even in dry-run mode.
             quarantine: Optional path to move samples instead of deleting.
+            dest: Optional separate destination root for organized files.
+                  When provided, files from root are moved into dest instead
+                  of being reorganized within root. Useful for routing a
+                  download directory into a separate media library.
         """
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         journal_path = root / f".{self.SERVICE_NAME}-journal-{timestamp}.jsonl"
         journal: list[dict] = []
         unexpected: list[str] = []
-        
+
         self._logger.info(
-            "START: %s (commit=%s, plan=%s, quarantine=%s)",
-            root, commit, plan, quarantine,
+            "START: %s (commit=%s, plan=%s, quarantine=%s, dest=%s)",
+            root, commit, plan, quarantine, dest or "(same as root)",
         )
-        
+
         # Collect all files
         files: list[Path] = []
         for dirpath, _, filenames in os.walk(root):
             for fn in filenames:
                 files.append(Path(dirpath) / fn)
-        
+
         # Process each file
         for path in files:
             if path.is_file():
-                self.process_file(path, root, commit, journal, quarantine, unexpected)
+                self.process_file(path, root, commit, journal, quarantine, unexpected, dest)
         
         # Set audio/subtitle track defaults for MKV files
         self._process_audio_tracks(root, commit)

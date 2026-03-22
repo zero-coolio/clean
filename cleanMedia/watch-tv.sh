@@ -18,6 +18,7 @@ set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 WATCH_DIR="${CLEAN_TV_DIR:-/Volumes/Seagate/seagate-qBittorrent}"
+MOVIE_DEST="${CLEAN_MOVIE_DEST:-/Volumes/Seagate/seagate-movie}"
 LOG_FILE="$SCRIPT_DIR/../logs/watch-tv.log"
 LOCK_FILE="$SCRIPT_DIR/../logs/.watch-tv.lock"
 PENDING_FILE="$SCRIPT_DIR/../logs/.watch-tv-pending.txt"
@@ -93,8 +94,17 @@ run_clean() {
     cd "$SCRIPT_DIR/.."
     export PYTHONPATH="$SCRIPT_DIR/.."
     python3 -m src.Main --directory "$WATCH_DIR" --commit 2>&1 | tee -a "$LOG_FILE"
-    local exit_code=${PIPESTATUS[0]}
-    
+    local tv_exit=${PIPESTATUS[0]}
+
+    # Run clean-movie on same source dir, routing matches to seagate-movie
+    local movie_cmd="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --dest \"$MOVIE_DEST\" --commit"
+    if [ -n "$TMDB_API_KEY" ]; then
+        movie_cmd="$movie_cmd --lookup"
+    fi
+    eval "$movie_cmd" 2>&1 | tee -a "$LOG_FILE"
+    local movie_exit=${PIPESTATUS[0]}
+
+    local exit_code=$(( tv_exit || movie_exit ))
     if [ $exit_code -eq 0 ]; then
         notify "Clean-TV" "✓ Finished successfully"
     else
@@ -133,6 +143,7 @@ log "========================================"
 log "Clean-TV Watcher Starting"
 log "========================================"
 log "Watching: $WATCH_DIR"
+log "Movie dest: $MOVIE_DEST"
 log "Debounce: ${DEBOUNCE_SECONDS}s"
 log "Log file: $LOG_FILE"
 log "----------------------------------------"
