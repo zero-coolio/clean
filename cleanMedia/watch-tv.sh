@@ -97,12 +97,39 @@ run_clean() {
     local tv_exit=${PIPESTATUS[0]}
 
     # Run clean-movie on same source dir, routing matches to seagate-movie
-    local movie_cmd="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --dest \"$MOVIE_DEST\" --commit"
+    # Build base command (no --commit yet — used for dry-run safety check first)
+    local movie_base="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --dest \"$MOVIE_DEST\""
     if [ -n "$TMDB_API_KEY" ]; then
-        movie_cmd="$movie_cmd --lookup"
+        movie_base="$movie_base --lookup"
     fi
-    eval "$movie_cmd" 2>&1 | tee -a "$LOG_FILE"
-    local movie_exit=${PIPESTATUS[0]}
+
+    # Safety pre-flight: dry-run and count video file conflicts (deletions)
+    local VIDEO_DELETE_THRESHOLD=3
+    log "Running clean-movie dry-run safety check..."
+    local dry_out
+    dry_out=$(eval "$movie_base" 2>&1)
+    local conflict_count
+    conflict_count=$(echo "$dry_out" | grep -c "CONFLICT:" || true)
+    log "clean-movie dry-run: $conflict_count potential video file deletion(s)"
+
+    local movie_exit=0
+    if [ "$conflict_count" -gt "$VIDEO_DELETE_THRESHOLD" ]; then
+        log "WARNING: $conflict_count video conflicts exceed threshold ($VIDEO_DELETE_THRESHOLD) — awaiting confirmation"
+        local response
+        response=$(osascript -e "display dialog \"clean-movie would delete $conflict_count video files due to conflicts.\n\nCheck the log before proceeding.\" buttons {\"Skip\", \"Proceed\"} default button \"Skip\" with title \"⚠ High Delete Count\" giving up after 120" 2>/dev/null || echo "gave up")
+        if [[ "$response" != *"Proceed"* ]]; then
+            log "WARNING: clean-movie commit SKIPPED ($conflict_count video conflicts, user declined or timed out)"
+            notify "Clean-TV" "⚠ Movie clean skipped: $conflict_count video conflicts — review log"
+            movie_exit=0  # not an error, just a skip
+        else
+            log "User confirmed: proceeding with $conflict_count video file conflicts"
+            eval "$movie_base --commit" 2>&1 | tee -a "$LOG_FILE"
+            movie_exit=${PIPESTATUS[0]}
+        fi
+    else
+        eval "$movie_base --commit" 2>&1 | tee -a "$LOG_FILE"
+        movie_exit=${PIPESTATUS[0]}
+    fi
 
     local exit_code=$(( tv_exit || movie_exit ))
     if [ $exit_code -eq 0 ]; then
