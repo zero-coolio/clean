@@ -200,6 +200,12 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
 
 _RE_SEASON_FOLDER = re.compile(r"^Season\s+\d+$", re.IGNORECASE)
 
+# Matches TV episode markers (S01E01, 1x01) and season packs (standalone S01)
+_RE_TV_IN_NAME = re.compile(
+    r"(?:^|[\s._\-\(])S\d{1,2}(?:E\d{1,2}|(?:[\s._\-\(]|$))",
+    re.IGNORECASE,
+)
+
 
 class CleanMovieService(BaseCleanService):
     """Service to clean and organize movie files."""
@@ -211,13 +217,23 @@ class CleanMovieService(BaseCleanService):
         self._use_tmdb_lookup = False
 
     def process_file(self, path, root, commit, journal, quarantine, unexpected, dest=None):
-        """Skip files already organized into TV Season folders."""
+        """Skip files already organized into TV Season folders, warn on TV-looking content."""
         try:
             rel = path.relative_to(root)
         except ValueError:
             rel = path
         if any(_RE_SEASON_FOLDER.match(part) for part in rel.parts):
             return
+
+        # Warn and skip if filename or any ancestor folder looks like TV content
+        names_to_check = [path.stem] + [p for p in rel.parts[:-1]]
+        for name in names_to_check:
+            if _RE_TV_IN_NAME.search(name):
+                self._logger.warning(
+                    "SKIP (looks like TV content): %s — move to TV library manually", path
+                )
+                return
+
         super().process_file(path, root, commit, journal, quarantine, unexpected, dest)
     
     # =========================================================================
