@@ -152,9 +152,13 @@ class BaseCleanService(ABC):
         
         return False
     
+    def _before_run(self, root: Path, commit: bool, journal: list[dict]) -> None:
+        """Hook called before the main file walk. Override in subclasses for pre-processing."""
+        pass
+
     def track_folder(self, folder: Path) -> None:
         """Track a folder as potentially needing cleanup.
-        
+
         Args:
             folder: Folder to track.
         """
@@ -460,6 +464,9 @@ class BaseCleanService(ABC):
             "START: %s (commit=%s, plan=%s, quarantine=%s, dest=%s)",
             root, commit, plan, quarantine, dest or "(same as root)",
         )
+
+        # Pre-run hook (e.g. folder rename hints)
+        self._before_run(root, commit, journal)
 
         # Collect all files
         files: list[Path] = []
