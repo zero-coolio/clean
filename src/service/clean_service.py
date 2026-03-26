@@ -14,8 +14,16 @@ from ..config import VIDEO_EXT, JUNK_EXT, TV_SIDECAR_EXT, get_logger
 from ..utils import normalize_unicode_separators, strip_noise_prefix
 from .base import BaseCleanService
 
-# Folder rename hint: "Old Show Name==New Show Name"
+# Show-level rename hint: "Old Show Name==New Show Name"
 _RE_RENAME_HINT = re.compile(r"^(?P<from>.+?)\s*==\s*(?P<to>.+)$")
+
+# Season-level rename hint: "Season 09==New Show Name (Year)"
+_RE_SEASON_RENAME_HINT = re.compile(
+    r"^Season\s+(?P<season>\d+)\s*==\s*(?P<to>.+)$", re.IGNORECASE
+)
+
+# Extracts SxxExx from a filename as a fallback
+_RE_EPISODE_IN_NAME = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,2})")
 
 
 # Episode parsing patterns
@@ -92,87 +100,168 @@ class CleanService(BaseCleanService):
     # =========================================================================
 
     def _before_run(self, root: Path, commit: bool, journal: list) -> None:
-        """Rename files and folders marked with == rename hints before the main walk.
+        """Apply folder rename hints before the main walk.
 
-        A folder named "Unknown Show==Top Gear (2002)" causes every file inside
-        whose name contains "Unknown.Show" (any separator) to be renamed to use
-        "Top.Gear.(2002)", and the folder itself is renamed to "Top Gear (2002)".
+        Two hint styles are supported:
+
+        Show-level:  "Old Show==New Show (Year)"
+            Renames all files inside from Old.Show → New.Show.(Year) then
+            renames/merges the folder to "New Show (Year)".
+
+        Season-level:  "Season 09==New Show (Year)"  (inside any show folder)
+            Rebuilds each file's name using the new show and the existing
+            episode number, then renames the Season folder back to "Season 09".
+            clean-tv's normal pass then routes files to the correct show folder.
         """
         for entry in sorted(root.iterdir()):
             if not entry.is_dir():
                 continue
+
+            # Show-level hint
             m = _RE_RENAME_HINT.match(entry.name)
-            if not m:
+            if m and not _RE_SEASON_RENAME_HINT.match(entry.name):
+                self._apply_show_rename(
+                    entry, root,
+                    m.group("from").strip(), m.group("to").strip(),
+                    commit, journal,
+                )
                 continue
 
-            from_name = m.group("from").strip()
-            to_name = m.group("to").strip()
-
-            # Build a pattern that matches from_name with any word separator
-            from_words = re.split(r"[\s._]+", from_name)
-            from_re = re.compile(
-                r"[\s._]*".join(re.escape(w) for w in from_words),
-                re.IGNORECASE,
-            )
-            # Replacement uses dots between words (clean-tv filename style)
-            to_dot = re.sub(r"\s+", ".", to_name)
-
-            self._logger.info("RENAME HINT: '%s' -> '%s'", from_name, to_name)
-
-            # Rename files inside the folder (walks Season subfolders too)
-            for file in sorted(entry.rglob("*")):
-                if not file.is_file():
+            # Season-level hints inside this show folder
+            for season_entry in sorted(entry.iterdir()):
+                if not season_entry.is_dir():
                     continue
-                new_name = from_re.sub(to_dot, file.name)
-                if new_name != file.name:
-                    new_path = file.parent / new_name
-                    self._logger.info("RENAME FILE: %s -> %s", file.name, new_name)
-                    if commit:
-                        file.rename(new_path)
-                    journal.append({"op": "move", "src": str(file), "dst": str(new_path)})
+                sm = _RE_SEASON_RENAME_HINT.match(season_entry.name)
+                if sm:
+                    self._apply_season_rename(
+                        season_entry,
+                        sm.group("season").zfill(2),
+                        sm.group("to").strip(),
+                        commit, journal,
+                    )
 
-            # Rename the folder itself to to_name
-            target = root / to_name
-            if target.exists() and target != entry:
-                # Target already exists — merge contents recursively
-                self._logger.warning(
-                    "RENAME HINT: target '%s' exists, merging contents", to_name
-                )
-                for child in sorted(entry.iterdir()):
-                    dest_child = target / child.name
-                    if not dest_child.exists():
-                        self._logger.info("MERGE: %s -> %s", child, dest_child)
-                        if commit:
-                            child.rename(dest_child)
-                        journal.append({"op": "move", "src": str(child), "dst": str(dest_child)})
-                    elif child.is_dir():
-                        # Season folder exists in both — merge files inside
-                        for grandchild in sorted(child.iterdir()):
-                            dest_gc = dest_child / grandchild.name
-                            if not dest_gc.exists():
-                                self._logger.info("MERGE FILE: %s -> %s", grandchild.name, dest_gc)
-                                if commit:
-                                    grandchild.rename(dest_gc)
-                                journal.append({"op": "move", "src": str(grandchild), "dst": str(dest_gc)})
-                            else:
-                                self._logger.warning("MERGE SKIP (exists): %s", dest_gc)
-                        if commit:
-                            try:
-                                child.rmdir()
-                            except OSError:
-                                pass
-                    else:
-                        self._logger.warning("MERGE SKIP (exists): %s", dest_child)
+    def _apply_show_rename(
+        self,
+        entry: Path,
+        root: Path,
+        from_name: str,
+        to_name: str,
+        commit: bool,
+        journal: list,
+    ) -> None:
+        """Apply a show-level rename hint."""
+        from_words = re.split(r"[\s._]+", from_name)
+        from_re = re.compile(
+            r"[\s._]*".join(re.escape(w) for w in from_words),
+            re.IGNORECASE,
+        )
+        to_dot = re.sub(r"\s+", ".", to_name)
+
+        self._logger.info("RENAME HINT: '%s' -> '%s'", from_name, to_name)
+
+        for file in sorted(entry.rglob("*")):
+            if not file.is_file():
+                continue
+            new_name = from_re.sub(to_dot, file.name)
+            if new_name != file.name:
+                new_path = file.parent / new_name
+                self._logger.info("RENAME FILE: %s -> %s", file.name, new_name)
                 if commit:
-                    try:
-                        entry.rmdir()
-                    except OSError:
-                        pass
+                    file.rename(new_path)
+                journal.append({"op": "move", "src": str(file), "dst": str(new_path)})
+
+        target = root / to_name
+        if target.exists() and target != entry:
+            self._logger.warning("RENAME HINT: target '%s' exists, merging contents", to_name)
+            for child in sorted(entry.iterdir()):
+                dest_child = target / child.name
+                if not dest_child.exists():
+                    self._logger.info("MERGE: %s -> %s", child, dest_child)
+                    if commit:
+                        child.rename(dest_child)
+                    journal.append({"op": "move", "src": str(child), "dst": str(dest_child)})
+                elif child.is_dir():
+                    for grandchild in sorted(child.iterdir()):
+                        dest_gc = dest_child / grandchild.name
+                        if not dest_gc.exists():
+                            self._logger.info("MERGE FILE: %s -> %s", grandchild.name, dest_gc)
+                            if commit:
+                                grandchild.rename(dest_gc)
+                            journal.append({"op": "move", "src": str(grandchild), "dst": str(dest_gc)})
+                        else:
+                            self._logger.warning("MERGE SKIP (exists): %s", dest_gc)
+                    if commit:
+                        try:
+                            child.rmdir()
+                        except OSError:
+                            pass
+                else:
+                    self._logger.warning("MERGE SKIP (exists): %s", dest_child)
+            if commit:
+                try:
+                    entry.rmdir()
+                except OSError:
+                    pass
+        else:
+            self._logger.info("RENAME FOLDER: '%s' -> '%s'", entry.name, to_name)
+            if commit:
+                entry.rename(target)
+            journal.append({"op": "move", "src": str(entry), "dst": str(target)})
+
+    def _apply_season_rename(
+        self,
+        season_entry: Path,
+        season_num: str,
+        to_name: str,
+        commit: bool,
+        journal: list,
+    ) -> None:
+        """Apply a season-level rename hint.
+
+        Rebuilds each file as <to_name_dot>.S<season>E<episode>.<ext>,
+        extracting the episode number from the existing filename.
+        Then renames the Season folder back to "Season <season_num>".
+        The normal clean-tv pass will then route files to the right show folder.
+        """
+        to_dot = re.sub(r"\s+", ".", to_name)
+        self._logger.info(
+            "SEASON RENAME HINT: Season %s -> '%s'", season_num, to_name
+        )
+
+        for file in sorted(season_entry.iterdir()):
+            if not file.is_file():
+                continue
+
+            # Try structured parse first, fall back to raw SxxExx search
+            parsed = parse_episode_from_string(file.stem)
+            if parsed:
+                episode = parsed[2]
             else:
-                self._logger.info("RENAME FOLDER: '%s' -> '%s'", entry.name, to_name)
+                ep_m = _RE_EPISODE_IN_NAME.search(file.name)
+                if not ep_m:
+                    self._logger.warning(
+                        "SEASON RENAME SKIP (no episode number): %s", file.name
+                    )
+                    continue
+                episode = ep_m.group(2).zfill(2)
+
+            new_name = f"{to_dot}.S{season_num}E{episode}{file.suffix.lower()}"
+            if new_name != file.name:
+                new_path = file.parent / new_name
+                self._logger.info("RENAME FILE: %s -> %s", file.name, new_name)
                 if commit:
-                    entry.rename(target)
-                journal.append({"op": "move", "src": str(entry), "dst": str(target)})
+                    file.rename(new_path)
+                journal.append({"op": "move", "src": str(file), "dst": str(new_path)})
+
+        # Rename the Season folder back (strip the hint)
+        target_season = season_entry.parent / f"Season {season_num}"
+        if target_season != season_entry:
+            self._logger.info(
+                "RENAME FOLDER: '%s' -> 'Season %s'", season_entry.name, season_num
+            )
+            if commit:
+                season_entry.rename(target_season)
+            journal.append({"op": "move", "src": str(season_entry), "dst": str(target_season)})
 
     # =========================================================================
     # Abstract method implementations
