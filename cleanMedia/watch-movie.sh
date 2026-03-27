@@ -157,6 +157,8 @@ run_clean
 # -L: follow symlinks
 # --event Created, Updated, MovedTo, Renamed: new, touched, moved/renamed files
 fswatch -r -L \
+    --exclude '\.jsonl$' \
+    --exclude '\.DS_Store$' \
     --event Created --event Updated --event MovedTo --event Renamed \
     "$WATCH_DIR" | while read -r file; do
     log "Change detected: $file"

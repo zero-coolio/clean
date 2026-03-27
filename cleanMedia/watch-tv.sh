@@ -182,9 +182,11 @@ run_clean
 # -r: recursive
 # -L: follow symlinks
 # --event Created, Updated, MovedTo, Renamed: new, touched, moved/renamed files
-# --exclude: ignore files already placed in organized Season folders (avoids re-triggering after clean-tv runs)
+# --exclude: ignore Season folders (already organised), journals, and DS_Store
 fswatch -r -L \
     --exclude '.*/Season [0-9]' \
+    --exclude '\.jsonl$' \
+    --exclude '\.DS_Store$' \
     --event Created --event Updated --event MovedTo --event Renamed \
     "$WATCH_DIR" | while read -r file; do
     log "Change detected: $file"
