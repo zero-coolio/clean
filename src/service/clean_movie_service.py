@@ -350,19 +350,37 @@ class CleanMovieService(BaseCleanService):
     # =========================================================================
     
     def _try_parse_media(self, path: Path, root: Path) -> tuple[str, str] | None:
-        """Try to parse media info, with optional TMDB fallback."""
-        # Try standard parsing first
+        """Try to parse media info, with TVMaze verify, then optional TMDB fallback."""
         parsed = super()._try_parse_media(path, root)
+
         if parsed:
-            return parsed
-        
+            title, year = parsed
+            title, year = self._tvmaze_verify(title, year)
+            return title, year
+
         # If TMDB lookup is enabled and this is a video file, try API
         if self._use_tmdb_lookup and path.suffix.lower() in VIDEO_EXT:
             raw_name = Path(path.name).stem
             clean_name = clean_movie_title(raw_name)
             return lookup_movie_year(clean_name, self._logger)
-        
+
         return None
+
+    def _tvmaze_verify(self, title: str, year: str) -> tuple[str, str]:
+        """Best-effort canonicalization of movie title via TVMaze. Returns original on failure."""
+        try:
+            from ..tvmaze import lookup_show
+            query = f"{title} ({year})" if year else title
+            result = lookup_show(query, logger=self._logger)
+            if result:
+                canonical, found_year = result
+                fy = found_year or year
+                if canonical.lower() != title.lower() or fy != year:
+                    self._logger.info("TVMaze verify: '%s (%s)' → '%s (%s)'", title, year, canonical, fy)
+                return canonical, fy
+        except Exception as e:
+            self._logger.debug("TVMaze verify failed for '%s': %s", title, e)
+        return title, year
     
     def run(
         self,

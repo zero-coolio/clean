@@ -268,13 +268,32 @@ class CleanService(BaseCleanService):
     # =========================================================================
 
     def _try_parse_media(self, path: Path, root: Path) -> tuple | None:
-        """Parse media info, then enrich show name with year from existing folder."""
+        """Parse media info, enrich with year from folder, then verify via TVMaze."""
         parsed = super()._try_parse_media(path, root)
         if parsed is None:
             return None
         show, season, episode = parsed
         if not re.search(r"(?:19|20)\d{2}", show):
             show = self._resolve_show_with_year(show, root)
+        show, season, episode = self._tvmaze_verify(show, season, episode)
+        return show, season, episode
+
+    def _tvmaze_verify(self, show: str, season: str, episode: str) -> tuple[str, str, str]:
+        """Verify and canonicalize show name + year via TVMaze. Returns original on failure."""
+        try:
+            from ..tvmaze import lookup_show
+            result = lookup_show(show, logger=self._logger)
+            if result:
+                canonical, year = result
+                if year:
+                    verified_show = f"{canonical} ({year})"
+                else:
+                    verified_show = canonical
+                if verified_show.lower() != show.lower():
+                    self._logger.info("TVMaze verify: '%s' → '%s'", show, verified_show)
+                return verified_show, season, episode
+        except Exception as e:
+            self._logger.debug("TVMaze verify failed for '%s': %s", show, e)
         return show, season, episode
 
     def _resolve_show_with_year(self, show: str, root: Path) -> str:
