@@ -14,12 +14,13 @@ Usage:
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import time
 import urllib.parse
 import urllib.request
-import json
-from typing import Optional
+from pathlib import Path
 
 _STOPWORDS = {
     "a", "an", "the", "and", "or", "of", "in", "on", "at", "to",
@@ -28,8 +29,38 @@ _STOPWORDS = {
 
 _RE_YEAR = re.compile(r"\s*\(((?:19|20)\d{2})\)\s*$")
 
-# Simple in-process cache: query_key → (canonical_name, year) | None
+# Disk cache path — sits next to this file
+_CACHE_PATH = Path(__file__).parent / ".tvmaze_cache.json"
+
+# In-process cache: query_key → (canonical_name, year) | None
 _cache: dict[str, tuple[str, str] | None] = {}
+_cache_dirty = False
+
+
+def _load_cache() -> None:
+    global _cache
+    if _CACHE_PATH.exists():
+        try:
+            raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+            # Values are stored as [name, year] or null
+            _cache = {k: (tuple(v) if v else None) for k, v in raw.items()}
+        except Exception:
+            pass
+
+
+def _save_cache() -> None:
+    global _cache_dirty
+    if not _cache_dirty:
+        return
+    try:
+        serializable = {k: list(v) if v else None for k, v in _cache.items()}
+        _CACHE_PATH.write_text(json.dumps(serializable, indent=2, ensure_ascii=False), encoding="utf-8")
+        _cache_dirty = False
+    except Exception:
+        pass
+
+
+_load_cache()
 
 # Rate limiting
 _last_request: float = 0.0
@@ -130,13 +161,16 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
     year_m = _RE_YEAR.search(name)
     year = year_m.group(1) if year_m else None
 
+    global _cache_dirty
     for query in _query_variants(name):
         results = _search(query)
         match = _best_match(results, year)
         if match:
             canonical, found_year = match
-            result = (canonical, found_year) if found_year else (canonical, year or "")
+            result: tuple[str, str] = (canonical, found_year) if found_year else (canonical, year or "")
             _cache[cache_key] = result
+            _cache_dirty = True
+            _save_cache()
             if logger:
                 logger.info("TVMaze: '%s' → '%s (%s)' (query: '%s')", name, canonical, found_year, query)
             return result
@@ -144,6 +178,8 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
     if logger:
         logger.warning("TVMaze: no match for '%s'", name)
     _cache[cache_key] = None
+    _cache_dirty = True
+    _save_cache()
     return None
 
 

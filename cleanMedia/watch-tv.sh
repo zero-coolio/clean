@@ -185,6 +185,7 @@ run_clean
 # --exclude: ignore Season folders (already organised), journals, and DS_Store
 fswatch -r -L \
     --exclude '.*/Season [0-9]' \
+    --exclude '.*/[^/]+ \([0-9]{4}\)$' \
     --exclude '\.jsonl$' \
     --exclude '\.DS_Store$' \
     --event Created --event Updated --event MovedTo --event Renamed \
