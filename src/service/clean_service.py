@@ -94,6 +94,8 @@ class CleanService(BaseCleanService):
 
     def __init__(self) -> None:
         super().__init__(get_logger("clean-tv"))
+        # Per-run cache: bare show name (lower) → canonical "Show (Year)" string
+        self._show_canonical: dict[str, str] = {}
 
     # =========================================================================
     # Folder rename hints  (FolderName==NewName)
@@ -275,26 +277,36 @@ class CleanService(BaseCleanService):
         show, season, episode = parsed
         if not re.search(r"(?:19|20)\d{2}", show):
             show = self._resolve_show_with_year(show, root)
-        show, season, episode = self._tvmaze_verify(show, season, episode)
+        show = self._canonical_show(show, season, episode)
         return show, season, episode
 
-    def _tvmaze_verify(self, show: str, season: str, episode: str) -> tuple[str, str, str]:
-        """Verify and canonicalize show name + year via TVMaze. Returns original on failure."""
+    def _canonical_show(self, show: str, season: str, episode: str) -> str:
+        """Return the canonical show name, consistent across all episodes in this run.
+
+        The bare show name (without year) is used as the key so that files
+        parsed with and without a year all resolve to the same canonical string.
+        """
+        bare = re.sub(r"\s*\((?:19|20)\d{2}\)\s*$", "", show).strip().lower()
+
+        if bare in self._show_canonical:
+            return self._show_canonical[bare]
+
+        # TVMaze lookup
         try:
             from ..tvmaze import lookup_show
             result = lookup_show(show, logger=self._logger)
             if result:
                 canonical, year = result
-                if year:
-                    verified_show = f"{canonical} ({year})"
-                else:
-                    verified_show = canonical
-                if verified_show.lower() != show.lower():
-                    self._logger.info("TVMaze verify: '%s' → '%s'", show, verified_show)
-                return verified_show, season, episode
+                verified = f"{canonical} ({year})" if year else canonical
+                if verified.lower() != show.lower():
+                    self._logger.info("TVMaze verify: '%s' → '%s'", show, verified)
+                self._show_canonical[bare] = verified
+                return verified
         except Exception as e:
             self._logger.debug("TVMaze verify failed for '%s': %s", show, e)
-        return show, season, episode
+
+        self._show_canonical[bare] = show
+        return show
 
     def _resolve_show_with_year(self, show: str, root: Path) -> str:
         """Return show name with year if a matching versioned folder exists in root."""
