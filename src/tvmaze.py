@@ -118,6 +118,25 @@ def _search(query: str) -> list[dict]:
         return []
 
 
+def _sanitize_name(name: str) -> str:
+    """Sanitize a show/movie name for safe use as a filesystem path component.
+
+    macOS HFS+ stores colons as '/' internally — a colon in a folder name creates
+    nested directories when viewed in Finder.  Replace colon sequences with ' - '
+    and strip any other characters that are reserved or problematic on common
+    filesystems (HFS+, APFS, NTFS, ext4).
+    """
+    # Colon → " - " (most common TVMaze culprit)
+    name = re.sub(r"\s*:\s*", " - ", name)
+    # Forward-slash (path separator) → remove (shouldn't appear but guard anyway)
+    name = re.sub(r"/", "", name)
+    # Other broadly-reserved characters: \ ? * | " < >
+    name = re.sub(r'[\\?*|"<>]', "", name)
+    # Collapse any double-spaces left behind
+    name = re.sub(r"  +", " ", name).strip()
+    return name
+
+
 def _best_match(results: list[dict], year: str | None) -> tuple[str, str] | None:
     """Pick the best result, preferring year match, then highest score."""
     candidates = []
@@ -167,6 +186,7 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
         match = _best_match(results, year)
         if match:
             canonical, found_year = match
+            canonical = _sanitize_name(canonical)
             result: tuple[str, str] = (canonical, found_year) if found_year else (canonical, year or "")
             _cache[cache_key] = result
             _cache_dirty = True

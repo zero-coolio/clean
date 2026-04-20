@@ -136,19 +136,27 @@ def same_content(a: Path, b: Path, logger=None) -> bool:
 
 
 def same_path(a: Path, b: Path) -> bool:
-    """Check if two paths resolve to the same filesystem location.
-    
+    """Check if two paths point to the same filesystem location.
+
+    Uses os.path.samefile() which compares inode + device numbers, so it
+    correctly handles case-insensitive filesystems (macOS HFS+/APFS) where
+    'Its.Always.Sunny.mp4' and 'its.always.sunny.mp4' are the same file but
+    Path.resolve() returns different strings.
+
+    Falls back to normalised string comparison when either path doesn't exist.
+
     Args:
         a: First path.
         b: Second path.
-        
+
     Returns:
-        True if paths point to the same location.
+        True if both paths refer to the same filesystem object.
     """
     try:
-        return a.resolve() == b.resolve()
+        return os.path.samefile(a, b)
     except OSError:
-        return str(a.absolute()) == str(b.absolute())
+        # One or both paths don't exist yet — compare normalised strings
+        return os.path.normcase(str(a.absolute())) == os.path.normcase(str(b.absolute()))
 
 
 def unique_path(p: Path) -> Path:
