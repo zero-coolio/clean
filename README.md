@@ -2,6 +2,8 @@
 
 Safety-critical media organizers for TV shows and Movies. Normalizes filenames, organizes into clean folder structures, handles duplicates, and keeps an undo journal.
 
+> A personal tool engineered like production: idempotent operations, dry-run by default, full reversibility via journals, and cross-device safety. Every destructive action is previewable, logged, and undoable.
+
 ## Features
 
 - **Dry-run by default** — Preview changes before committing
