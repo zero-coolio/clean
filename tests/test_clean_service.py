@@ -5,7 +5,11 @@ import time
 import pytest
 from pathlib import Path
 
-from src.service.clean_service import CleanService, parse_episode_from_string
+from src.service.clean_service import (
+    CleanService,
+    parse_episode_from_string,
+    episode_title_suffix,
+)
 from src.utils import is_english_subtitle, touch_folder, safe_move
 
 
@@ -46,6 +50,35 @@ class TestParseEpisodeFromString:
         """Handles dotted 'Season.X.Episode.Y' format."""
         result = parse_episode_from_string("Some.Show.Season.3.Episode.7.720p.mkv")
         assert result == ("Some Show", "03", "07")
+
+    def test_compact_code_three_digit(self) -> None:
+        """Handles scene compact code: 3-digit token = season + 2-digit episode."""
+        result = parse_episode_from_string("hawaii.five-0.2010.713.hdtv-lol")
+        assert result == ("Hawaii Five 0 (2010)", "07", "13")
+
+    def test_compact_code_four_digit(self) -> None:
+        """Handles scene compact code: 4-digit token = 2-digit season + episode."""
+        result = parse_episode_from_string("South.Park.1314.HDTV.x264-GROUP")
+        assert result == ("South Park", "13", "14")
+
+    def test_compact_code_does_not_match_year_or_resolution(self) -> None:
+        """A year + resolution (no episode code) must not be parsed as an episode."""
+        assert parse_episode_from_string("The.Dark.Knight.2008.1080p.BluRay.x264-GROUP") is None
+
+    def test_explicit_sxxeyy_wins_over_compact(self) -> None:
+        """Explicit SxxExx is preferred even when a year is present."""
+        result = parse_episode_from_string("Hawaii.Five-0.2010.S07E13.HDTV.x264-LOL")
+        assert result == ("Hawaii Five 0 (2010)", "07", "13")
+
+    def test_bare_episode_number_seasonless(self) -> None:
+        """Seasonless miniseries with a leading-zero episode number -> S01Exx."""
+        result = parse_episode_from_string("Horatio Hornblower 03 The Duchess And The Devil 480P H")
+        assert result == ("Horatio Hornblower", "01", "03")
+
+    def test_bare_episode_requires_leading_zero(self) -> None:
+        """A non-zero-padded number in a title must NOT be read as an episode."""
+        assert parse_episode_from_string("Studio 60 on the Sunset Strip 1080p") is None
+        assert parse_episode_from_string("Apollo 13 1995 1080p") is None
 
 
 class TestBuildDest:
@@ -198,6 +231,118 @@ class TestCleanServiceIntegration:
         assert (quarantine / "sample-show.mkv").exists()
         # Video should be moved to clean structure
         assert (root / "Show" / "Season 01" / "Show.S01E01.mkv").exists()
+
+
+class TestCollisionResolution:
+    """When two different episode files map to the same destination, keep newer."""
+
+    @staticmethod
+    def _no_tvmaze(monkeypatch) -> None:
+        """Stop the canonical-show and episode-title lookups from hitting the network."""
+        monkeypatch.setattr("src.tvmaze.lookup_show", lambda name, logger=None: None)
+        monkeypatch.setattr(
+            "src.tvmaze.lookup_episode_name",
+            lambda name, season, episode, logger=None: None,
+        )
+
+    def test_newer_source_replaces_older_dest(self, tmp_path: Path, monkeypatch) -> None:
+        """A colliding source that is newer than the dest wins."""
+        self._no_tvmaze(monkeypatch)
+        root = tmp_path / "intake"
+        root.mkdir()
+
+        # Pre-existing (older) destination
+        dest = CleanService.build_dest(root, "Show", "01", "01", ".mkv")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("OLD", encoding="utf-8")
+        old_time = time.time() - 10_000
+        os.utime(dest, (old_time, old_time))
+
+        # Newer source with different content (different size -> not a dup)
+        wrapper = root / "Show.S01.1080p.WEB-GROUP"
+        wrapper.mkdir()
+        src = wrapper / "Show.S01E01.1080p.WEB-GROUP.mkv"
+        src.write_text("NEWER-CONTENT", encoding="utf-8")  # newer by default mtime
+
+        CleanService().run(root=root, commit=True, quarantine=None)
+
+        assert not src.exists()
+        assert dest.read_text(encoding="utf-8") == "NEWER-CONTENT"
+
+    def test_older_source_keeps_newer_dest(self, tmp_path: Path, monkeypatch) -> None:
+        """A colliding source that is older than the dest is discarded."""
+        self._no_tvmaze(monkeypatch)
+        root = tmp_path / "intake"
+        root.mkdir()
+
+        # Pre-existing (newer) destination
+        dest = CleanService.build_dest(root, "Show", "01", "01", ".mkv")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("NEWER-DEST", encoding="utf-8")
+
+        # Older source with different content
+        wrapper = root / "Show.S01.1080p.WEB-GROUP"
+        wrapper.mkdir()
+        src = wrapper / "Show.S01E01.1080p.WEB-GROUP.mkv"
+        src.write_text("OLD", encoding="utf-8")
+        old_time = time.time() - 10_000
+        os.utime(src, (old_time, old_time))
+
+        CleanService().run(root=root, commit=True, quarantine=None)
+
+        assert not src.exists()
+        assert dest.read_text(encoding="utf-8") == "NEWER-DEST"
+
+
+class TestEpisodeTitleSuffix:
+    """Tests for formatting an episode title into a filename segment."""
+
+    def test_basic(self) -> None:
+        assert episode_title_suffix("We Don't Fight at Weddings") == "We.Don't.Fight.at.Weddings"
+
+    def test_strips_illegal_chars(self) -> None:
+        assert episode_title_suffix("Part 1: The End?") == "Part.1.The.End"
+
+    def test_empty(self) -> None:
+        assert episode_title_suffix("") == ""
+
+
+class TestEpisodeTitleInDest:
+    """The episode title (when available) is appended after SxxExx."""
+
+    def test_build_dest_appends_title(self, tmp_path: Path) -> None:
+        dest = CleanService.build_dest(
+            tmp_path, "Letterkenny (2016)", "05", "01", ".mkv", "We Don't Fight at Weddings"
+        )
+        expected = (
+            tmp_path / "Letterkenny (2016)" / "Season 05"
+            / "Letterkenny.(2016).S05E01.We.Don't.Fight.at.Weddings.mkv"
+        )
+        assert dest == expected
+
+    def test_build_dest_without_title_unchanged(self, tmp_path: Path) -> None:
+        dest = CleanService.build_dest(tmp_path, "Letterkenny", "05", "01", ".mkv")
+        assert dest == tmp_path / "Letterkenny" / "Season 05" / "Letterkenny.S05E01.mkv"
+
+    def test_title_flows_into_rename(self, tmp_path: Path, monkeypatch) -> None:
+        """End-to-end: a resolved title lands in the renamed file."""
+        monkeypatch.setattr("src.tvmaze.lookup_show", lambda name, logger=None: None)
+        monkeypatch.setattr(
+            "src.tvmaze.lookup_episode_name",
+            lambda name, season, episode, logger=None: "The Pilot",
+        )
+        root = tmp_path / "intake"
+        root.mkdir()
+        wrapper = root / "Show.S01.1080p.WEB-GROUP"
+        wrapper.mkdir()
+        src = wrapper / "Show.S01E01.1080p.WEB-GROUP.mkv"
+        src.write_text("DATA", encoding="utf-8")
+
+        CleanService().run(root=root, commit=True, quarantine=None)
+
+        expected = root / "Show" / "Season 01" / "Show.S01E01.The.Pilot.mkv"
+        assert expected.exists()
+        assert not src.exists()
 
 
 class TestIsEnglishSubtitle:

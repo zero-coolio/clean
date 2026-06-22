@@ -347,23 +347,42 @@ class BaseCleanService(ABC):
                 safe_delete(path, commit, journal, self._logger)
                 return
             
-            # Handle destination conflict — keep the larger file
+            # Handle destination conflict — keep the NEWER file (by mtime).
+            # When mtimes are identical, fall back to keeping the larger file
+            # (the old heuristic) as a tiebreak.
             if dest.exists():
-                src_size = path.stat().st_size
-                dst_size = dest.stat().st_size
-                if src_size > dst_size:
+                src_stat = path.stat()
+                dst_stat = dest.stat()
+                src_mtime, dst_mtime = src_stat.st_mtime, dst_stat.st_mtime
+                if src_mtime > dst_mtime:
                     self._logger.warning(
-                        "CONFLICT: source larger (%d > %d bytes), replacing dest: %s",
-                        src_size, dst_size, dest,
+                        "CONFLICT: source newer (mtime %.0f > %.0f), replacing dest: %s",
+                        src_mtime, dst_mtime, dest,
                     )
                     safe_delete(dest, commit, journal, self._logger)
-                else:
+                elif src_mtime < dst_mtime:
                     self._logger.warning(
-                        "CONFLICT: dest larger or equal (%d >= %d bytes), keeping dest, deleting source: %s",
-                        dst_size, src_size, path,
+                        "CONFLICT: dest newer (mtime %.0f > %.0f), keeping dest, deleting source: %s",
+                        dst_mtime, src_mtime, path,
                     )
                     safe_delete(path, commit, journal, self._logger)
                     return
+                else:
+                    # Same mtime — tiebreak on size, keep the larger file.
+                    src_size, dst_size = src_stat.st_size, dst_stat.st_size
+                    if src_size > dst_size:
+                        self._logger.warning(
+                            "CONFLICT: same mtime, source larger (%d > %d bytes), replacing dest: %s",
+                            src_size, dst_size, dest,
+                        )
+                        safe_delete(dest, commit, journal, self._logger)
+                    else:
+                        self._logger.warning(
+                            "CONFLICT: same mtime, dest larger or equal (%d >= %d bytes), keeping dest, deleting source: %s",
+                            dst_size, src_size, path,
+                        )
+                        safe_delete(path, commit, journal, self._logger)
+                        return
 
             # Move the file
             self._logger.info("MOVE: %s -> %s", path, dest)

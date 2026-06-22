@@ -41,6 +41,63 @@ RE_SEASON_EPISODE = re.compile(
     re.IGNORECASE,
 )
 
+# Scene "compact code" format: a standalone 3- or 4-digit token where the
+# digits are season+episode concatenated, e.g.
+#   Hawaii.Five-0.2010.713.hdtv-lol   -> S07E13   (3 digits: S=7,  E=13)
+#   South.Park.1314.HDTV.x264          -> S13E14   (4 digits: S=13, E=14)
+# The token must be delimited on both sides so it can't grab the trailing "0"
+# in "Five-0", a resolution like "1080p"/"720p", or a codec like "x264".
+_RE_COMPACT_TOKEN = re.compile(r"(?:^|[.\s_\-])(\d{3,4})(?=[.\s_\-]|$)")
+
+
+def _parse_compact_code(name: str) -> tuple[str, str, str, int] | None:
+    """Last-resort parse for the scene compact-code episode format.
+
+    Scans for standalone 3-4 digit tokens, skips anything that looks like a
+    release year (19xx/20xx), and treats the first remaining token as the
+    season+episode code. Returns (raw_show, season, episode, end_index) where
+    end_index is the offset just past the code token, or None if no usable
+    token is found.
+
+    Note: a genuine S20E10 would encode as "2010" and is indistinguishable
+    from a year, so it is (deliberately) skipped — years are far more common
+    than 20+ season shows, and misclassifying a year as an episode is worse.
+    """
+    for m in _RE_COMPACT_TOKEN.finditer(name):
+        tok = m.group(1)
+        if len(tok) == 4 and re.fullmatch(r"(?:19|20)\d{2}", tok):
+            continue  # release year, not an episode code
+        if len(tok) == 3:
+            season, episode = tok[0], tok[1:]
+        else:
+            season, episode = tok[:2], tok[2:]
+        if int(episode) == 0:
+            continue  # "100" -> E00 etc. is not a real episode
+        raw_show = name[: m.start(1)]
+        return raw_show, season, episode, m.end(1)
+    return None
+
+
+# Seasonless "bare episode number" format used by miniseries / TV-film runs:
+#   Horatio Hornblower 03 The Duchess And The Devil 480p  -> S01E03
+# A leading zero ("03") is REQUIRED: it's the signal that distinguishes an
+# episode number from a number baked into a show title ("Studio 60",
+# "Catch 22", "Apollo 13"), which are essentially never zero-padded. The token
+# must be delimited on both sides. Season is assumed to be 01 (Plex/Jellyfin
+# treat seasonless miniseries as Season 01). Consequence: episodes >= 10 (no
+# leading zero) are deliberately NOT matched here, to avoid false positives.
+RE_BARE_EPISODE = re.compile(
+    r"^(?P<show>.*?)[.\s_\-]+(?P<episode>0\d)(?=[.\s_\-])",
+)
+
+
+def _parse_bare_episode(name: str) -> tuple[str, str, str, int] | None:
+    """Last-resort parse for the seasonless bare-episode-number format."""
+    m = RE_BARE_EPISODE.search(name)
+    if not m:
+        return None
+    return m.group("show"), "01", m.group("episode"), m.end("episode")
+
 
 def parse_episode_from_string(s: str) -> tuple[str, str, str] | None:
     """Parse TV episode information from a string.
@@ -49,6 +106,8 @@ def parse_episode_from_string(s: str) -> tuple[str, str, str] | None:
     - Show.Name.S01E02...
     - Show Name - 1x02 - Episode Title
     - Show Name Season 2 Episode 5
+    - Show.Name.2010.713.hdtv-lol  (scene compact code: S07E13)
+    - Horatio Hornblower 03 Title 480p  (seasonless bare episode: S01E03)
 
     Args:
         s: Filename or folder name to parse.
@@ -59,13 +118,20 @@ def parse_episode_from_string(s: str) -> tuple[str, str, str] | None:
     """
     name = normalize_unicode_separators(strip_noise_prefix(s))
     match = RE_SXXEYY.search(name) or RE_X.search(name) or RE_SEASON_EPISODE.search(name)
-    
-    if not match:
-        return None
-    
-    raw_show = match.group("show")
-    season = match.group("season")
-    episode = match.group("episode")
+
+    if match:
+        raw_show = match.group("show")
+        season = match.group("season")
+        episode = match.group("episode")
+        match_end = match.end()
+    else:
+        # Fall back to looser formats only when the explicit SxxExx / NxYY /
+        # "Season N Episode M" forms don't match: first the scene compact code,
+        # then the seasonless bare-episode-number form.
+        fallback = _parse_compact_code(name) or _parse_bare_episode(name)
+        if not fallback:
+            return None
+        raw_show, season, episode, match_end = fallback
 
     # Clean up show name
     show = re.sub(r"[._\-]+", " ", raw_show).strip()
@@ -79,12 +145,27 @@ def parse_episode_from_string(s: str) -> tuple[str, str, str] | None:
 
     # If no year in show name, check remainder of filename (e.g. Show.S01E01(2002).mkv)
     if not re.search(r"(?:19|20)\d{2}", show):
-        remainder = name[match.end():]
+        remainder = name[match_end:]
         year_match = re.search(r"[(\s._\-]((?:19|20)\d{2})[)\s._\-]", remainder)
         if year_match:
             show = f"{show} ({year_match.group(1)})"
 
     return show, season.zfill(2), episode.zfill(2)
+
+
+def episode_title_suffix(title: str) -> str:
+    """Format an episode title into a dotted, filesystem-safe filename segment.
+
+    "We Don't Fight at Weddings" -> "We.Don't.Fight.at.Weddings"
+    Strips characters illegal on common filesystems, converts whitespace runs
+    to single dots, and collapses repeated dots. Returns "" for an empty title.
+    """
+    if not title:
+        return ""
+    t = re.sub(r'[\\/:*?"<>|]', "", title)   # illegal path chars
+    t = re.sub(r"\s+", ".", t.strip())        # whitespace -> dots
+    t = re.sub(r"\.+", ".", t).strip(".")     # collapse runs of dots
+    return t
 
 
 class CleanService(BaseCleanService):
@@ -270,7 +351,11 @@ class CleanService(BaseCleanService):
     # =========================================================================
 
     def _try_parse_media(self, path: Path, root: Path) -> tuple | None:
-        """Parse media info, enrich with year from folder, then verify via TVMaze."""
+        """Parse media info, enrich with year from folder, then verify via TVMaze.
+
+        Returns a 4-tuple (show, season, episode, title); title is "" when no
+        episode name could be resolved.
+        """
         parsed = super()._try_parse_media(path, root)
         if parsed is None:
             return None
@@ -278,7 +363,20 @@ class CleanService(BaseCleanService):
         if not re.search(r"(?:19|20)\d{2}", show):
             show = self._resolve_show_with_year(show, root)
         show = self._canonical_show(show, season, episode)
-        return show, season, episode
+        title = self._episode_title(show, season, episode)
+        return show, season, episode, title
+
+    def _episode_title(self, show: str, season: str, episode: str) -> str:
+        """Best-effort episode title from TVMaze; "" if unavailable."""
+        try:
+            from ..tvmaze import lookup_episode_name
+            title = lookup_episode_name(show, season, episode, logger=self._logger)
+            return title or ""
+        except Exception as e:
+            self._logger.debug(
+                "Episode title lookup failed for '%s' S%sE%s: %s", show, season, episode, e
+            )
+            return ""
 
     def _canonical_show(self, show: str, season: str, episode: str) -> str:
         """Return the canonical show name, consistent across all episodes in this run.
@@ -327,36 +425,27 @@ class CleanService(BaseCleanService):
         """Parse episode info from a filename or folder name."""
         return parse_episode_from_string(name)
     
-    def build_video_dest(self, root: Path, parsed: tuple[str, str, str], ext: str) -> Path:
+    def build_video_dest(self, root: Path, parsed: tuple, ext: str) -> Path:
         """Build destination path for a video file.
-        
-        Format: <root>/<Show Name>/Season <SS>/<Show.Name.SxxExx.<ext>
+
+        Format: <root>/<Show Name>/Season <SS>/<Show.Name.SxxExx[.Episode.Title].<ext>
+        `parsed` may be a 3-tuple (show, season, episode) or a 4-tuple that also
+        carries the episode title.
         """
-        show, season, episode = parsed
-        
-        show_folder = show.strip() or "Unknown Show"
-        season_folder = root / show_folder / f"Season {season}"
-        
-        base_show = re.sub(r"\s+", ".", show_folder)
-        filename = f"{base_show}.S{season}E{episode}{ext.lower()}"
-        
-        return season_folder / filename
-    
-    def build_sidecar_dest(self, root: Path, parsed: tuple[str, str, str], original_name: str) -> Path:
+        show, season, episode = parsed[0], parsed[1], parsed[2]
+        title = parsed[3] if len(parsed) > 3 else ""
+        return self.build_dest(root, show, season, episode, ext, title)
+
+    def build_sidecar_dest(self, root: Path, parsed: tuple, original_name: str) -> Path:
         """Build destination path for a sidecar file.
-        
-        Sidecars use the same base name as the video file.
+
+        Sidecars use the same base name as the video file (including the
+        episode title, so media servers keep them paired).
         """
-        show, season, episode = parsed
-        
-        show_folder = show.strip() or "Unknown Show"
-        season_folder = root / show_folder / f"Season {season}"
-        
-        base_show = re.sub(r"\s+", ".", show_folder)
+        show, season, episode = parsed[0], parsed[1], parsed[2]
+        title = parsed[3] if len(parsed) > 3 else ""
         ext = Path(original_name).suffix
-        filename = f"{base_show}.S{season}E{episode}{ext.lower()}"
-        
-        return season_folder / filename
+        return self.build_dest(root, show, season, episode, ext, title)
     
     def is_clean_folder_name(self, folder_name: str) -> bool:
         """Check if folder follows 'Season XX' format."""
@@ -390,23 +479,24 @@ class CleanService(BaseCleanService):
     # =========================================================================
     
     @staticmethod
-    def build_dest(root: Path, show: str, season: str, episode: str, ext: str) -> Path:
-        """Build destination path (static method for backwards compatibility)."""
+    def build_dest(root: Path, show: str, season: str, episode: str, ext: str, title: str = "") -> Path:
+        """Build destination path. Appends the episode title after SxxExx when given.
+
+        e.g. Letterkenny.(2016).S05E01.We.Don't.Fight.at.Weddings.mkv
+        """
         show_folder = show.strip() or "Unknown Show"
         season_folder = root / show_folder / f"Season {season}"
         base_show = re.sub(r"\s+", ".", show_folder)
-        filename = f"{base_show}.S{season}E{episode}{ext.lower()}"
+        suffix = episode_title_suffix(title)
+        title_part = f".{suffix}" if suffix else ""
+        filename = f"{base_show}.S{season}E{episode}{title_part}{ext.lower()}"
         return season_folder / filename
-    
+
     @staticmethod
-    def build_sidecar_target(root: Path, show: str, season: str, episode: str, name: str) -> Path:
+    def build_sidecar_target(root: Path, show: str, season: str, episode: str, name: str, title: str = "") -> Path:
         """Build sidecar path (static method for backwards compatibility)."""
-        show_folder = show.strip() or "Unknown Show"
-        season_folder = root / show_folder / f"Season {season}"
-        base_show = re.sub(r"\s+", ".", show_folder)
         ext = Path(name).suffix
-        filename = f"{base_show}.S{season}E{episode}{ext.lower()}"
-        return season_folder / filename
+        return CleanService.build_dest(root, show, season, episode, ext, title)
     
     def undo_from_journal(self, journal_path: Path) -> None:
         """Undo operations from a journal file (legacy method name)."""

@@ -64,6 +64,10 @@ rename_backup.json
 .DS_Store
 *.jsonl
 
+# Logs
+logs/*
+!logs/.gitkeep
+
 # Journals (keep in repo for reference, but typically local)
 # .clean-tv-journal-*.jsonl
 # .clean-movie-journal-*.jsonl
