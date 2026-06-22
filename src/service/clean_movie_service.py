@@ -9,6 +9,7 @@ and cleans up empty directories.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -128,38 +129,71 @@ def parse_movie_from_string(s: str) -> tuple[str, str] | None:
 # TMDB API Support with Rate Limiting
 # ============================================================================
 
+# Disk cache path — sits next to this file, mirrors the TVMaze cache pattern
+_TMDB_CACHE_PATH = Path(__file__).parent / ".tmdb_cache.json"
+
+# In-process cache: query_key → (clean_title, year) | None
 _tmdb_cache: dict[str, tuple[str, str] | None] = {}
 _tmdb_last_request: float = 0
 _TMDB_MIN_INTERVAL = 0.25  # 4 requests per second max
 
 
+def _load_tmdb_cache() -> None:
+    """Load the persisted TMDB cache from disk into the in-process cache."""
+    global _tmdb_cache
+    if _TMDB_CACHE_PATH.exists():
+        try:
+            raw = json.loads(_TMDB_CACHE_PATH.read_text(encoding="utf-8"))
+            # Values are stored as [title, year] or null
+            _tmdb_cache = {k: (tuple(v) if v else None) for k, v in raw.items()}
+        except Exception:
+            pass
+
+
+def _save_tmdb_cache() -> None:
+    """Persist the in-process TMDB cache to disk (best-effort)."""
+    try:
+        serializable = {k: list(v) if v else None for k, v in _tmdb_cache.items()}
+        _TMDB_CACHE_PATH.write_text(
+            json.dumps(serializable, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+_load_tmdb_cache()
+
+
 def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
     """Look up a movie's year from TMDB API.
-    
+
+    Results (including negative results) are cached in-process and persisted to
+    disk so repeated runs don't re-hit the API for titles already seen.
+
     Includes rate limiting to avoid hitting API limits.
-    
+
     Args:
         title: Movie title to search for.
         logger: Optional logger for status messages.
-        
+
     Returns:
         Tuple of (clean_title, year) or None if not found.
     """
     global _tmdb_last_request
-    
+
     if not REQUESTS_AVAILABLE or not TMDB_API_KEY:
         return None
-    
+
     # Check cache
     cache_key = title.lower().strip()
     if cache_key in _tmdb_cache:
         return _tmdb_cache[cache_key]
-    
+
     # Rate limiting
     elapsed = time.time() - _tmdb_last_request
     if elapsed < _TMDB_MIN_INTERVAL:
         time.sleep(_TMDB_MIN_INTERVAL - elapsed)
-    
+
     try:
         url = "https://api.themoviedb.org/3/search/movie"
         params = {
@@ -171,7 +205,7 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
         _tmdb_last_request = time.time()
         response.raise_for_status()
         data = response.json()
-        
+
         if data.get("results"):
             movie = data["results"][0]
             movie_title = movie.get("title", title)
@@ -180,17 +214,20 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
                 year = release_date[:4]
                 result = (movie_title, year)
                 _tmdb_cache[cache_key] = result
+                _save_tmdb_cache()
                 if logger:
                     logger.info("TMDB LOOKUP: '%s' -> '%s (%s)'", title, movie_title, year)
                 return result
-        
+
         _tmdb_cache[cache_key] = None
+        _save_tmdb_cache()
         return None
-        
+
     except Exception as e:
         if logger:
             logger.debug("TMDB lookup failed for '%s': %s", title, e)
         _tmdb_cache[cache_key] = None
+        _save_tmdb_cache()
         return None
 
 
