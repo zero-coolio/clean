@@ -22,6 +22,9 @@ LOG_FILE="$SCRIPT_DIR/../logs/watch-movie.log"
 LOCK_FILE="$SCRIPT_DIR/../logs/.watch-movie.lock"
 PENDING_FILE="$SCRIPT_DIR/../logs/.watch-movie-pending.txt"
 DEBOUNCE_SECONDS=30
+# Quiet period: coalesce bursts and swallow events clean emits during its own
+# run, so the watcher can't re-trigger itself in a loop. See watch-tv.sh.
+SETTLE_SECONDS=15
 LAST_RUN=0
 
 # Create logs directory
@@ -163,5 +166,11 @@ fswatch -r -L \
     "$WATCH_DIR" | while read -r file; do
     log "Change detected: $file"
     echo "$file" >> "$PENDING_FILE"
+    # Coalesce a burst until quiet for SETTLE_SECONDS, then run once.
+    while read -r -t "$SETTLE_SECONDS" more; do
+        echo "$more" >> "$PENDING_FILE"
+    done
     run_clean
+    # Discard events clean generated during its own run (loop guard).
+    while read -r -t "$SETTLE_SECONDS" _ignored; do :; done
 done

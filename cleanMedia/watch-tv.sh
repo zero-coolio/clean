@@ -23,6 +23,11 @@ LOG_FILE="$SCRIPT_DIR/../logs/watch-tv.log"
 LOCK_FILE="$SCRIPT_DIR/../logs/.watch-tv.lock"
 PENDING_FILE="$SCRIPT_DIR/../logs/.watch-tv-pending.txt"
 DEBOUNCE_SECONDS=30
+# Quiet period: after a change, wait this long with no further events before
+# running, and after a run, swallow events for this long. This coalesces bursts
+# AND absorbs the flurry of events clean emits while moving files (which used to
+# re-trigger the watcher in an endless loop).
+SETTLE_SECONDS=15
 LAST_RUN=0
 
 # Create logs directory
@@ -192,5 +197,14 @@ fswatch -r -L \
     "$WATCH_DIR" | while read -r file; do
     log "Change detected: $file"
     echo "$file" >> "$PENDING_FILE"
+    # Coalesce: keep reading until the watch dir is quiet for SETTLE_SECONDS,
+    # batching a burst of downloads into a single run.
+    while read -r -t "$SETTLE_SECONDS" more; do
+        echo "$more" >> "$PENDING_FILE"
+    done
     run_clean
+    # clean's own moves/renames during its (multi-minute) run queue up more
+    # events; discard them so we don't immediately re-run on our own writes.
+    # Safe: each run rescans the whole library, so nothing is lost.
+    while read -r -t "$SETTLE_SECONDS" _ignored; do :; done
 done
