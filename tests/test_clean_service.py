@@ -570,3 +570,145 @@ class TestCleanServiceTimestampIntegration:
         # Show folder timestamp should be updated
         new_mtime = show_folder.stat().st_mtime
         assert new_mtime > old_time
+
+
+class TestParseDuration:
+    """Tests for the human-duration parser used by --since / --recent."""
+
+    def test_seconds_bare_number(self) -> None:
+        from src.config import parse_duration
+        assert parse_duration("3600") == 3600
+
+    def test_minutes(self) -> None:
+        from src.config import parse_duration
+        assert parse_duration("30m") == 1800
+
+    def test_hours(self) -> None:
+        from src.config import parse_duration
+        assert parse_duration("1h") == 3600
+
+    def test_days(self) -> None:
+        from src.config import parse_duration
+        assert parse_duration("2d") == 2 * 24 * 3600
+
+    def test_explicit_seconds_suffix(self) -> None:
+        from src.config import parse_duration
+        assert parse_duration("90s") == 90
+
+    def test_decimal_value(self) -> None:
+        from src.config import parse_duration
+        assert parse_duration("1.5h") == 5400
+
+    def test_whitespace_and_case(self) -> None:
+        from src.config import parse_duration
+        assert parse_duration(" 2H ") == 7200
+
+    def test_default_window_is_an_hour(self) -> None:
+        from src.config import DEFAULT_RECENT_WINDOW, parse_duration
+        assert parse_duration(DEFAULT_RECENT_WINDOW) == 3600
+
+    @pytest.mark.parametrize("bad", ["", "abc", "10x", "h", "-5m", None])
+    def test_invalid_raises(self, bad) -> None:
+        from src.config import parse_duration
+        with pytest.raises(ValueError):
+            parse_duration(bad)
+
+
+class TestIsRecent:
+    """Tests for the file-mtime cutoff predicate."""
+
+    def test_no_cutoff_accepts_everything(self, tmp_path: Path) -> None:
+        f = tmp_path / "anything.mkv"
+        f.write_text("x")
+        os.utime(f, (0, 0))  # ancient
+        assert CleanService._is_recent(f, None) is True
+
+    def test_recent_file_within_window(self, tmp_path: Path) -> None:
+        f = tmp_path / "new.mkv"
+        f.write_text("x")
+        now = time.time()
+        os.utime(f, (now, now))
+        cutoff = now - 3600
+        assert CleanService._is_recent(f, cutoff) is True
+
+    def test_old_file_outside_window(self, tmp_path: Path) -> None:
+        f = tmp_path / "old.mkv"
+        f.write_text("x")
+        now = time.time()
+        os.utime(f, (now - 7200, now - 7200))  # 2h old
+        cutoff = now - 3600
+        assert CleanService._is_recent(f, cutoff) is False
+
+    def test_missing_file_fails_open(self, tmp_path: Path) -> None:
+        f = tmp_path / "gone.mkv"  # never created
+        cutoff = time.time() - 3600
+        assert CleanService._is_recent(f, cutoff) is True
+
+
+class TestIncrementalRun:
+    """run(since_seconds=...) processes only recent files, keyed on FILE mtime."""
+
+    def _build_library(self, tmp_path: Path) -> Path:
+        """Create a library mixing old/new files in old/new folders.
+
+        Layout (mtimes relative to now):
+          OldShow (2010)/Season 01/OldShow.S01E01.mp4         old file, old folder
+          OldShow (2010)/Season 01/OldShow.S01E02.mp4         NEW file, OLD folder  <- must process
+          New.Release.1080p.x264-GRP/New.S02E03.mp4           NEW file, NEW folder  <- must process
+          Stale.Release.1080p.x264-GRP/Stale.S04E05.mp4       old file, new-ish folder
+        """
+        root = tmp_path / "lib"
+        now = time.time()
+        old = now - 7200   # 2h ago
+        new = now - 60     # 1m ago
+
+        def mk(rel: str, mtime: float) -> None:
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("DATA")
+            os.utime(p, (mtime, mtime))
+
+        mk("OldShow (2010)/Season 01/OldShow.S01E01.mp4", old)
+        mk("OldShow (2010)/Season 01/OldShow.S01E02.mp4", new)
+        mk("New.Release.1080p.x264-GRP/New.Show.S02E03.mp4", new)
+        mk("Stale.Release.1080p.x264-GRP/Stale.Show.S04E05.mp4", old)
+        return root
+
+    def _run_and_collect(self, root: Path, since_seconds, monkeypatch) -> set[str]:
+        """Run with process_file/audio stubbed; return names process_file saw."""
+        service = CleanService()
+        seen: set[str] = set()
+
+        def fake_process_file(path, *args, **kwargs):
+            seen.add(path.name)
+
+        monkeypatch.setattr(service, "process_file", fake_process_file)
+        # Avoid mkvtoolnix + filesystem churn unrelated to the filter under test.
+        monkeypatch.setattr(service, "_process_audio_tracks", lambda *a, **k: None)
+        monkeypatch.setattr(service, "_report_large_files", lambda *a, **k: None)
+
+        service.run(root=root, commit=False, since_seconds=since_seconds)
+        return seen
+
+    def test_incremental_skips_old_keeps_new(self, tmp_path: Path, monkeypatch) -> None:
+        root = self._build_library(tmp_path)
+        seen = self._run_and_collect(root, 3600, monkeypatch)
+
+        # New file in an OLD folder must be processed (filter is per-file).
+        assert "OldShow.S01E02.mp4" in seen
+        # New file in a new release folder must be processed.
+        assert "New.Show.S02E03.mp4" in seen
+        # Old files must be skipped regardless of their folder's age.
+        assert "OldShow.S01E01.mp4" not in seen
+        assert "Stale.Show.S04E05.mp4" not in seen
+
+    def test_full_run_processes_everything(self, tmp_path: Path, monkeypatch) -> None:
+        root = self._build_library(tmp_path)
+        seen = self._run_and_collect(root, None, monkeypatch)
+
+        assert seen == {
+            "OldShow.S01E01.mp4",
+            "OldShow.S01E02.mp4",
+            "New.Show.S02E03.mp4",
+            "Stale.Show.S04E05.mp4",
+        }

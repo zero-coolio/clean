@@ -42,9 +42,17 @@ notify() {
 }
 
 run_clean() {
+    # Pass "--recent" for incremental mode (only files modified in the last
+    # hour). Event-triggered runs use this for speed; the startup / --once sweep
+    # omits it for a full pass over the library.
+    local since_flag=""
+    if [ "$1" == "--recent" ]; then
+        since_flag="--recent"
+    fi
+
     local now=$(date +%s)
     local elapsed=$((now - LAST_RUN))
-    
+
     # Debounce: skip if we ran recently
     if [ $elapsed -lt $DEBOUNCE_SECONDS ]; then
         log "Skipping (ran ${elapsed}s ago, debounce is ${DEBOUNCE_SECONDS}s)"
@@ -97,7 +105,7 @@ run_clean() {
     export PYTHONPATH="$SCRIPT_DIR/.."
     
     # Build command with optional TMDB lookup
-    CMD="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --commit"
+    CMD="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --commit $since_flag"
     if [ -n "$TMDB_API_KEY" ]; then
         CMD="$CMD --lookup"
     fi
@@ -170,7 +178,7 @@ fswatch -r -L \
     while read -r -t "$SETTLE_SECONDS" more; do
         echo "$more" >> "$PENDING_FILE"
     done
-    run_clean
+    run_clean --recent
     # Discard events clean generated during its own run (loop guard).
     while read -r -t "$SETTLE_SECONDS" _ignored; do :; done
 done
