@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 
 # ============================================================================
@@ -58,6 +59,52 @@ QUALITY_MARKERS = [
     r"DIRECTORS\.?CUT", r"THEATRICAL", r"IMAX",
     r"10bit", r"HDR", r"HDR10", r"DV", r"DoVi",
 ]
+
+# ============================================================================
+# Incremental ("recent files only") mode
+# ============================================================================
+
+# Default time window for --recent: only files modified within the last hour
+# are processed. Watcher-triggered runs use this so a single new download is
+# organized in seconds instead of re-walking/re-checking the whole library.
+DEFAULT_RECENT_WINDOW = "60m"
+
+_DURATION_UNITS = {
+    "s": 1,
+    "m": 60,
+    "h": 60 * 60,
+    "d": 24 * 60 * 60,
+}
+
+_RE_DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$", re.IGNORECASE)
+
+
+def parse_duration(text: str) -> float:
+    """Parse a human duration like "1h", "30m", "90s", "2d" into seconds.
+
+    A bare number with no unit is interpreted as seconds ("3600" == "1h").
+    Accepts an optional decimal (e.g. "1.5h"). Raises ValueError on anything
+    unparseable so a typo'd watcher flag fails loudly rather than silently
+    disabling the time-window filter.
+
+    Args:
+        text: Duration string (e.g. "1h", "45m", "2d", "3600").
+
+    Returns:
+        The duration in seconds as a float.
+
+    Raises:
+        ValueError: If the string is not a recognized duration.
+    """
+    m = _RE_DURATION.match(text or "")
+    if not m:
+        raise ValueError(
+            f"Invalid duration {text!r}; expected forms like '1h', '30m', '90s', '2d', or a bare number of seconds"
+        )
+    value = float(m.group(1))
+    unit = m.group(2).lower() or "s"
+    return value * _DURATION_UNITS[unit]
+
 
 # ============================================================================
 # Logging Setup

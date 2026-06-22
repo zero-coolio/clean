@@ -427,6 +427,7 @@ class CleanMovieService(BaseCleanService):
         quarantine: Path | None = None,
         lookup: bool = False,
         dest: Path | None = None,
+        since_seconds: float | None = None,
     ) -> None:
         """Run the movie cleaning process.
 
@@ -438,9 +439,11 @@ class CleanMovieService(BaseCleanService):
             lookup: If True, use TMDB API to look up missing years.
             dest: Optional separate destination root (e.g. seagate-movie)
                   when scanning a shared download directory.
+            since_seconds: Optional incremental window (seconds); only files
+                  modified within it are processed. None processes everything.
         """
         self._use_tmdb_lookup = lookup
-        super().run(root, commit, plan, quarantine, dest)
+        super().run(root, commit, plan, quarantine, dest, since_seconds)
     
     # =========================================================================
     # Legacy compatibility methods

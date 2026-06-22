@@ -45,9 +45,19 @@ notify() {
 }
 
 run_clean() {
+    # Pass "--recent" to run in incremental mode (only files modified in the
+    # last hour). Event-triggered runs use this so a single new download is
+    # organized in seconds instead of re-walking the whole ~318-folder library.
+    # The startup / --once sweep omits it for a full pass (catches anything that
+    # arrived while the watcher was down).
+    local since_flag=""
+    if [ "$1" == "--recent" ]; then
+        since_flag="--recent"
+    fi
+
     local now=$(date +%s)
     local elapsed=$((now - LAST_RUN))
-    
+
     # Debounce: skip if we ran recently
     if [ $elapsed -lt $DEBOUNCE_SECONDS ]; then
         log "Skipping (ran ${elapsed}s ago, debounce is ${DEBOUNCE_SECONDS}s)"
@@ -98,12 +108,12 @@ run_clean() {
     # Run clean-tv
     cd "$SCRIPT_DIR/.."
     export PYTHONPATH="$SCRIPT_DIR/.."
-    python3 -m src.Main --directory "$WATCH_DIR" --commit 2>&1 | tee -a "$LOG_FILE"
+    python3 -m src.Main --directory "$WATCH_DIR" --commit $since_flag 2>&1 | tee -a "$LOG_FILE"
     local tv_exit=${PIPESTATUS[0]}
 
     # Run clean-movie on same source dir, routing matches to seagate-movie
     # Build base command (no --commit yet — used for dry-run safety check first)
-    local movie_base="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --dest \"$MOVIE_DEST\""
+    local movie_base="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --dest \"$MOVIE_DEST\" $since_flag"
     if [ -n "$TMDB_API_KEY" ]; then
         movie_base="$movie_base --lookup"
     fi
@@ -202,7 +212,7 @@ fswatch -r -L \
     while read -r -t "$SETTLE_SECONDS" more; do
         echo "$more" >> "$PENDING_FILE"
     done
-    run_clean
+    run_clean --recent
     # clean's own moves/renames during its (multi-minute) run queue up more
     # events; discard them so we don't immediately re-run on our own writes.
     # Safe: each run rescans the whole library, so nothing is lost.

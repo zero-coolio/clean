@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from logging import Logger
@@ -165,6 +166,33 @@ class BaseCleanService(ABC):
 
         return False
     
+    @staticmethod
+    def _is_recent(path: Path, cutoff: float | None) -> bool:
+        """Return True if the file should be processed given an mtime cutoff.
+
+        With no cutoff (manual full run) every file qualifies. Otherwise a file
+        qualifies only if its OWN mtime is at or after the cutoff. We deliberately
+        key off the file's mtime, never the folder's: a freshly downloaded episode
+        dropped into an OLD, already-organized show folder must still be processed,
+        and an old file inside a brand-new release folder must NOT resurrect.
+
+        A file we cannot stat is treated as recent (fail-open) so the incremental
+        path never silently skips something the full path would have handled.
+
+        Args:
+            path: File to test.
+            cutoff: Unix mtime threshold (seconds), or None to accept everything.
+
+        Returns:
+            True if the file is within the window (or there is no window).
+        """
+        if cutoff is None:
+            return True
+        try:
+            return path.stat().st_mtime >= cutoff
+        except OSError:
+            return True
+
     def _before_run(self, root: Path, commit: bool, journal: list[dict]) -> None:
         """Hook called before the main file walk. Override in subclasses for pre-processing."""
         pass
@@ -474,6 +502,7 @@ class BaseCleanService(ABC):
         plan: bool = False,
         quarantine: Path | None = None,
         dest: Path | None = None,
+        since_seconds: float | None = None,
     ) -> None:
         """Run the cleaning process.
 
@@ -486,15 +515,25 @@ class BaseCleanService(ABC):
                   When provided, files from root are moved into dest instead
                   of being reorganized within root. Useful for routing a
                   download directory into a separate media library.
+            since_seconds: Optional incremental window. When set, only files
+                  whose mtime is within the last `since_seconds` seconds are
+                  processed; the already-organized library is skipped. None
+                  (the default) preserves full behavior — every file is
+                  processed. See `_is_recent`.
         """
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         journal_path = root / f".{self.SERVICE_NAME}-journal-{timestamp}.jsonl"
         journal: list[dict] = []
         unexpected: list[str] = []
 
+        cutoff: float | None = None
+        if since_seconds is not None:
+            cutoff = time.time() - since_seconds
+
         self._logger.info(
-            "START: %s (commit=%s, plan=%s, quarantine=%s, dest=%s)",
+            "START: %s (commit=%s, plan=%s, quarantine=%s, dest=%s, since=%s)",
             root, commit, plan, quarantine, dest or "(same as root)",
+            f"{since_seconds:.0f}s (mtime >= {cutoff:.0f})" if cutoff is not None else "(full)",
         )
 
         # Pre-run hook (e.g. folder rename hints)
@@ -506,13 +545,30 @@ class BaseCleanService(ABC):
             for fn in filenames:
                 files.append(Path(dirpath) / fn)
 
-        # Process each file
+        # Process each file. In incremental mode, skip files outside the window
+        # up front — keyed on the FILE's own mtime, so a new download in an old
+        # show folder is still handled (see _is_recent).
+        considered = 0
+        skipped_old = 0
         for path in files:
-            if path.is_file():
-                self.process_file(path, root, commit, journal, quarantine, unexpected, dest)
-        
-        # Set audio/subtitle track defaults for MKV files
-        self._process_audio_tracks(root, commit)
+            if not path.is_file():
+                continue
+            if not self._is_recent(path, cutoff):
+                skipped_old += 1
+                continue
+            considered += 1
+            self.process_file(path, root, commit, journal, quarantine, unexpected, dest)
+
+        if cutoff is not None:
+            self._logger.info(
+                "INCREMENTAL: processed %d recent file(s), skipped %d outside window",
+                considered, skipped_old,
+            )
+
+        # Set audio/subtitle track defaults for MKV files (gated to recent files
+        # in incremental mode — running mkvmerge over the whole library is the
+        # dominant per-run cost this mode exists to avoid).
+        self._process_audio_tracks(root, commit, cutoff)
         
         # Cleanup
         cleanup_empty_dirs(root, commit, self._logger)
@@ -537,28 +593,33 @@ class BaseCleanService(ABC):
         
         self._logger.info("END")
     
-    def _process_audio_tracks(self, root: Path, commit: bool) -> None:
+    def _process_audio_tracks(self, root: Path, commit: bool, cutoff: float | None = None) -> None:
         """Set English audio as default and disable non-forced subtitles.
-        
+
         Args:
             root: Root directory to scan.
             commit: If True, apply changes.
+            cutoff: Optional mtime threshold; when set, only MKVs modified at or
+                after it are inspected (incremental mode). Older files were
+                already normalized on a previous run.
         """
         if not check_mkvtoolnix_installed():
             self._logger.warning("mkvtoolnix not installed - skipping audio track defaults")
             self._logger.warning("Install with: brew install mkvtoolnix")
             return
-        
+
         self._logger.info("")
         self._logger.info("=== AUDIO/SUBTITLE TRACK DEFAULTS ===")
-        
+
         processed = 0
         updated = 0
-        
+
         for path in root.rglob("*.mkv"):
             if not path.is_file():
                 continue
-            
+            if not self._is_recent(path, cutoff):
+                continue
+
             processed += 1
             if set_track_defaults(path, self._logger, commit):
                 updated += 1

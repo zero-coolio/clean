@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from src.config import DEFAULT_RECENT_WINDOW, parse_duration
 from src.service.clean_movie_service import CleanMovieService
 
 
@@ -26,7 +27,30 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use TMDB API to look up missing years (requires TMDB_API_KEY env var)",
     )
+    ap.add_argument(
+        "--since",
+        metavar="DURATION",
+        help=(
+            "Incremental mode: only process files modified within DURATION "
+            "(e.g. '1h', '30m', '2d', or a bare number of seconds). The "
+            "already-organized library is skipped. Omit for a full run."
+        ),
+    )
+    ap.add_argument(
+        "--recent",
+        action="store_true",
+        help=f"Incremental mode shorthand for --since {DEFAULT_RECENT_WINDOW}.",
+    )
     return ap.parse_args()
+
+
+def resolve_since_seconds(since: str | None, recent: bool) -> float | None:
+    """Resolve --since / --recent flags into a window in seconds (or None)."""
+    if since:
+        return parse_duration(since)
+    if recent:
+        return parse_duration(DEFAULT_RECENT_WINDOW)
+    return None
 
 
 def main() -> None:
@@ -40,6 +64,7 @@ def main() -> None:
     root = Path(args.directory).expanduser().resolve()
     dest = Path(args.dest).expanduser().resolve() if args.dest else None
     quarantine = Path(args.quarantine).expanduser().resolve() if args.quarantine else None
+    since_seconds = resolve_since_seconds(args.since, args.recent)
     service.run(
         root=root,
         commit=args.commit,
@@ -47,6 +72,7 @@ def main() -> None:
         quarantine=quarantine,
         lookup=args.lookup,
         dest=dest,
+        since_seconds=since_seconds,
     )
 
 
