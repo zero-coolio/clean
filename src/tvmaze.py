@@ -104,12 +104,20 @@ def _save_cache() -> None:
 
 
 def _load_episodes_cache() -> dict[str, dict]:
-    """Load the shared episode cache (read fresh from disk each call site asks).
+    """Return the shared episode cache, loaded from disk ONCE and held in memory.
 
-    Re-reads from disk so we pick up entries lime wrote since we started.
-    Returns {} on any error or if the file does not exist yet.
+    Memoized: the first call reads + parses the file; later calls reuse the
+    in-memory dict. This is a big deal for performance — a clean run does an
+    episode-title lookup per file (thousands), and re-reading/parsing the
+    multi-MB cache each time dominated run time. Safe to memoize because lime is
+    now a read-only consumer, so CleanMedia is the only writer of this file; our
+    own writes keep the in-memory copy current via _save_episodes_cache. Each
+    clean run is a fresh process, so it reloads from disk on first use (no
+    cross-run staleness).
     """
     global _episodes_cache
+    if _episodes_cache is not None:
+        return _episodes_cache
     if _SHARED_CACHE_PATH.exists():
         try:
             _episodes_cache = json.loads(_SHARED_CACHE_PATH.read_text(encoding="utf-8"))
@@ -121,11 +129,15 @@ def _load_episodes_cache() -> dict[str, dict]:
 
 
 def _save_episodes_cache(data: dict[str, dict]) -> None:
-    """Persist the shared episode cache (best-effort, last-writer-wins).
+    """Persist new entries and keep the in-memory cache in sync.
 
-    Re-reads the on-disk file first and merges, so a concurrent lime write of a
-    *different* show isn't clobbered (same-show races still last-writer-win).
+    Updates the memoized in-memory cache so later lookups this run see the new
+    entries, then merges into the on-disk file (read-modify-write) so a
+    concurrent writer's other-show entries aren't clobbered.
     """
+    global _episodes_cache
+    if _episodes_cache is not None:
+        _episodes_cache.update(data)
     try:
         _SHARED_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         merged: dict = {}

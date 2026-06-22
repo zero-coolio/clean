@@ -14,3 +14,6 @@ def _isolate_shared_tvmaze_cache(tmp_path, monkeypatch):
     """
     cache_file = tmp_path / "tvmaze-cache.json"
     monkeypatch.setattr("src.tvmaze._SHARED_CACHE_PATH", cache_file, raising=False)
+    # The episode cache is memoized in memory; reset it so each test loads fresh
+    # from its own temp path instead of reusing a prior test's in-memory copy.
+    monkeypatch.setattr("src.tvmaze._episodes_cache", None, raising=False)
