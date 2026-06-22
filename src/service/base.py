@@ -10,7 +10,7 @@ from datetime import datetime
 from logging import Logger
 from pathlib import Path
 
-from ..config import VIDEO_EXT, SAMPLE_PATTERNS
+from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES
 from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
 from ..utils import (
     cleanup_empty_dirs,
@@ -133,23 +133,36 @@ class BaseCleanService(ABC):
     
     def is_sample_file(self, path: Path) -> bool:
         """Check if a file is a sample, proof, or trailer.
-        
+
+        Size is the decisive guard: a real episode is always larger than
+        SAMPLE_MAX_BYTES (100 MB), so a legitimate episode whose title merely
+        contains "sample"/"proof"/"trailer" (e.g. "Bulletproof",
+        "Proof of Concept", "Nacho Sampler") can never be classified as a
+        sample and deleted. Only small files are considered at all.
+
         Args:
             path: File path to check.
-            
+
         Returns:
             True if the file appears to be a sample.
         """
+        # A genuine sample is tiny; never treat a full-size file as a sample.
+        try:
+            if path.stat().st_size >= SAMPLE_MAX_BYTES:
+                return False
+        except OSError:
+            return False
+
         lowered = path.name.lower()
-        
-        # Check filename
+
+        # Small + sample-ish filename
         if any(pattern in lowered for pattern in SAMPLE_PATTERNS):
             return True
-        
-        # Check if in a Sample/ folder
+
+        # Small + sitting in a Sample/ folder
         if path.parent.name.lower() in ("sample", "samples"):
             return True
-        
+
         return False
     
     def _before_run(self, root: Path, commit: bool, journal: list[dict]) -> None:

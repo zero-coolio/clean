@@ -25,6 +25,12 @@ MOVIE_DELETE_EXT = JUNK_EXT | frozenset({".nfo", ".txt"})
 # Sample/junk filename patterns
 SAMPLE_PATTERNS = ("sample", "proof", "trailer")
 
+# A real episode is never this small; a genuine sample/trailer/proof clip is.
+# Size is the DECISIVE guard for sample detection so a legitimate episode whose
+# title merely contains "sample"/"proof"/"trailer" as a substring (e.g.
+# "Bulletproof", "Proof of Concept", "Nacho Sampler") is never deleted.
+SAMPLE_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+
 # Subdirectory names containing subtitles
 SUBS_FOLDER_NAMES = frozenset({"subs", "subtitles", "sub"})
 
