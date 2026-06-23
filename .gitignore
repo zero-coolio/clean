@@ -71,3 +71,4 @@ logs/*
 # Journals (keep in repo for reference, but typically local)
 # .clean-tv-journal-*.jsonl
 # .clean-movie-journal-*.jsonl
+*.tsx-1
