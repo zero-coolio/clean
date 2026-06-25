@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 from ..config import VIDEO_EXT, JUNK_EXT, TV_SIDECAR_EXT, get_logger
 from ..utils import normalize_unicode_separators, strip_noise_prefix
@@ -99,58 +100,152 @@ def _parse_bare_episode(name: str) -> tuple[str, str, str, int] | None:
     return m.group("show"), "01", m.group("episode"), m.end("episode")
 
 
-def parse_episode_from_string(s: str) -> tuple[str, str, str] | None:
-    """Parse TV episode information from a string.
+# A spurious SxxExx that a *prior* clean run appended AFTER quality/release
+# tags, e.g. "Horatio.Hornblower.03.The.Duchess.480P.H.S02E64". Left in place it
+# wins the parse (RE_SXXEYY) and swallows the whole junk string as the "show".
+# Only stripped when a real bare-episode number can still be recovered from the
+# remainder (the poison signal) — so a legitimate trailing SxxExx is never lost.
+_RE_TRAILING_SXXEXX = re.compile(r"[.\s_\-]+s\d{1,2}e\d{1,2}\s*$", re.IGNORECASE)
 
-    Handles common patterns:
+# Known media / sidecar extensions, stripped before parsing so a trailing
+# ".mkv" can't pollute the episode-title hint or block the poison-strip's
+# end-anchor. Restricted to a known set so folder names like "...S06" (no real
+# extension) are never truncated.
+_RE_MEDIA_EXT = re.compile(
+    r"\.(mkv|mp4|avi|m4v|mov|wmv|flv|ts|mpg|mpeg|webm|srt|sub|idx|ass|ssa|vtt|nfo|txt)$",
+    re.IGNORECASE,
+)
+
+# Release/quality noise; used to trim an episode-title hint down to real words.
+_RE_QUALITY_NOISE = re.compile(
+    r"(?i)[.\s_\-]+("
+    r"\d{3,4}p|web[.\s_\-]?dl|webrip|hdtv|blu[.\s_\-]?ray|bdrip|hdrip|dvdrip|web|"
+    r"x26[45]|h[.\s_\-]?26[45]|hevc|xvid|aac\d?|ac3|dd[.\s_\-]?5[.\s_\-]?1|"
+    r"proper|repack|internal|complete|extended|remastered|\[[^\]]*\]|-[a-z0-9]+"
+    r")\b.*$"
+)
+
+
+class ParsedEpisode(NamedTuple):
+    """Richer parse result used for TVMaze id-collapse + renumbering."""
+    show: str
+    season: str
+    episode: str
+    title_hint: str   # episode-title text recovered from the name ("" if none)
+    seasonless: bool  # True when the season was *guessed* (bare-episode form)
+
+
+def _clean_show_name(raw_show: str, remainder: str) -> str:
+    """Title-case + year-normalize a raw show fragment (shared parse logic)."""
+    show = re.sub(r"[._\-]+", " ", raw_show).strip()
+    show = re.sub(r"\s+", " ", show).title()
+    # Normalize bare year to parenthesized form: "Show Name 2002" → "Show Name (2002)"
+    show = re.sub(r"\s+((?:19|20)\d{2})$", r" (\1)", show)
+    # If no year in the show name, check the remainder (e.g. Show.S01E01.(2002).mkv)
+    if not re.search(r"(?:19|20)\d{2}", show):
+        year_match = re.search(r"[(\s._\-]((?:19|20)\d{2})[)\s._\-]", remainder)
+        if year_match:
+            show = f"{show} ({year_match.group(1)})"
+    return show
+
+
+def _title_hint_from_remainder(remainder: str) -> str:
+    """Recover a human episode title from the text after the episode marker,
+    dropping quality/release noise. Returns '' when nothing meaningful remains."""
+    t = _RE_QUALITY_NOISE.sub("", remainder)
+    t = re.sub(r"[._\-]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip(" .-_")
+    # Drop a leading bare year token left over from "Show 1998 Title" remainders.
+    t = re.sub(r"^(?:19|20)\d{2}\b\s*", "", t).strip()
+    return t.title() if t else ""
+
+
+def parse_episode_detail(s: str) -> ParsedEpisode | None:
+    """Parse TV episode info, carrying an episode-title hint + a seasonless flag.
+
+    Handles the same patterns as before:
     - Show.Name.S01E02...
     - Show Name - 1x02 - Episode Title
     - Show Name Season 2 Episode 5
     - Show.Name.2010.713.hdtv-lol  (scene compact code: S07E13)
-    - Horatio Hornblower 03 Title 480p  (seasonless bare episode: S01E03)
+    - Horatio Hornblower 03 Title 480p  (seasonless bare episode → guessed S01)
 
-    Args:
-        s: Filename or folder name to parse.
-
-    Returns:
-        Tuple of (show_name, season, episode) or None if unparseable.
-        Season and episode are zero-padded to 2 digits.
+    Plus: strips a spurious trailing SxxExx left by an earlier mis-parse (see
+    `_RE_TRAILING_SXXEXX`) so poisoned bare-episode files parse correctly.
     """
-    name = normalize_unicode_separators(strip_noise_prefix(s))
-    match = RE_SXXEYY.search(name) or RE_X.search(name) or RE_SEASON_EPISODE.search(name)
+    name = normalize_unicode_separators(strip_noise_prefix(_RE_MEDIA_EXT.sub("", s)))
 
+    # Drop a spurious trailing SxxExx appended after quality tags, but ONLY when
+    # a real bare-episode number survives in the remainder (the poison signal).
+    stripped = _RE_TRAILING_SXXEXX.sub("", name)
+    if stripped != name and _parse_bare_episode(stripped) is not None:
+        name = stripped
+
+    match = RE_SXXEYY.search(name) or RE_X.search(name) or RE_SEASON_EPISODE.search(name)
+    seasonless = False
     if match:
         raw_show = match.group("show")
         season = match.group("season")
         episode = match.group("episode")
         match_end = match.end()
     else:
-        # Fall back to looser formats only when the explicit SxxExx / NxYY /
-        # "Season N Episode M" forms don't match: first the scene compact code,
-        # then the seasonless bare-episode-number form.
-        fallback = _parse_compact_code(name) or _parse_bare_episode(name)
-        if not fallback:
-            return None
-        raw_show, season, episode, match_end = fallback
+        # Looser fallbacks only when the explicit forms miss: scene compact code
+        # (which carries a real season) first, then the seasonless bare number.
+        compact = _parse_compact_code(name)
+        if compact:
+            raw_show, season, episode, match_end = compact
+        else:
+            bare = _parse_bare_episode(name)
+            if not bare:
+                return None
+            raw_show, season, episode, match_end = bare
+            seasonless = True   # season was assumed to be 01
 
-    # Clean up show name
-    show = re.sub(r"[._\-]+", " ", raw_show).strip()
-    show = re.sub(r"\s+", " ", show)
+    remainder = name[match_end:]
+    show = _clean_show_name(raw_show, remainder)
+    title_hint = _title_hint_from_remainder(remainder)
+    return ParsedEpisode(show, season.zfill(2), episode.zfill(2), title_hint, seasonless)
 
-    # Title case the show name
-    show = show.title()
 
-    # Normalize bare year to parenthesized form: "Show Name 2002" → "Show Name (2002)"
-    show = re.sub(r"\s+((?:19|20)\d{2})$", r" (\1)", show)
+def parse_episode_from_string(s: str) -> tuple[str, str, str] | None:
+    """Back-compat 3-tuple wrapper over `parse_episode_detail`.
 
-    # If no year in show name, check remainder of filename (e.g. Show.S01E01(2002).mkv)
-    if not re.search(r"(?:19|20)\d{2}", show):
-        remainder = name[match_end:]
-        year_match = re.search(r"[(\s._\-]((?:19|20)\d{2})[)\s._\-]", remainder)
-        if year_match:
-            show = f"{show} ({year_match.group(1)})"
+    Returns (show_name, season, episode) — zero-padded — or None.
+    """
+    d = parse_episode_detail(s)
+    return None if d is None else (d.show, d.season, d.episode)
 
-    return show, season.zfill(2), episode.zfill(2)
+
+def _normalize_title(t: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace — for fuzzy matching."""
+    t = re.sub(r"[^a-z0-9 ]", " ", t.lower())
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _match_episode_by_title(ordered: list[dict], hint: str) -> dict | None:
+    """Find the TVMaze episode whose title best matches a folder title hint.
+
+    Tries exact / substring containment first (handles "The Duchess and the
+    Devil" inside "Hornblower: The Duchess and the Devil"), then a token-overlap
+    fallback gated at 60% so a weak hint can't grab the wrong episode.
+    """
+    h = _normalize_title(hint)
+    if not h:
+        return None
+    for ep in ordered:
+        et = _normalize_title(ep.get("title", ""))
+        if et and (h == et or h in et or et in h):
+            return ep
+    hw = set(h.split())
+    best, best_score = None, 0.0
+    for ep in ordered:
+        ew = set(_normalize_title(ep.get("title", "")).split())
+        if not ew:
+            continue
+        score = len(hw & ew) / max(len(hw), 1)
+        if score > best_score:
+            best, best_score = ep, score
+    return best if best_score >= 0.6 else None
 
 
 def episode_title_suffix(title: str) -> str:
@@ -177,6 +272,12 @@ class CleanService(BaseCleanService):
         super().__init__(get_logger("clean-tv"))
         # Per-run cache: bare show name (lower) → canonical "Show (Year)" string
         self._show_canonical: dict[str, str] = {}
+        # Per-run cache: TVMaze show id → canonical "Show (Year)" string. The
+        # FIRST spelling to resolve a given id sets the canonical name; every
+        # other spelling that resolves to the same id reuses it, so name-variant
+        # folders (e.g. "Horatio Hornblower" and "C S Forester's Horatio
+        # Hornblower") collapse into one show folder.
+        self._id_canonical: dict[int, str] = {}
 
     # =========================================================================
     # Folder rename hints  (FolderName==NewName)
@@ -356,15 +457,91 @@ class CleanService(BaseCleanService):
         Returns a 4-tuple (show, season, episode, title); title is "" when no
         episode name could be resolved.
         """
-        parsed = super()._try_parse_media(path, root)
-        if parsed is None:
+        detail = self._parse_detail(path)
+        if detail is None:
             return None
-        show, season, episode = parsed
+        show, season, episode = detail.show, detail.season, detail.episode
         if not re.search(r"(?:19|20)\d{2}", show):
             show = self._resolve_show_with_year(show, root)
         show = self._canonical_show(show, season, episode)
+        # Renumber to TVMaze's actual seasons (e.g. seasonless / flattened
+        # anthologies → year-based seasons). No-op when the parsed pair is
+        # already a real TVMaze episode.
+        season, episode = self._remap_episode_via_tvmaze(show, season, episode, detail)
         title = self._episode_title(show, season, episode)
         return show, season, episode, title
+
+    def _parse_detail(self, path: Path) -> ParsedEpisode | None:
+        """Parse (with title hint + seasonless flag) from filename, then parent,
+        then a Subs/ grandparent — mirroring the base resolution order."""
+        from ..config import SUBS_FOLDER_NAMES
+        for candidate in (path.name, path.parent.name):
+            d = parse_episode_detail(candidate)
+            if d:
+                return d
+        if path.parent.name.lower() in SUBS_FOLDER_NAMES and len(path.parents) >= 2:
+            d = parse_episode_detail(path.parents[1].name)
+            if d:
+                return d
+        return None
+
+    def _remap_episode_via_tvmaze(
+        self, show: str, season: str, episode: str, detail: ParsedEpisode
+    ) -> tuple[str, str]:
+        """Remap (season, episode) onto TVMaze's real numbering for `show`.
+
+        Strategy, in order:
+          1. If the parsed pair is already a real TVMaze episode → keep it
+             (the common case; a no-op for normal, correctly-numbered files).
+          2. Match the folder's episode-title hint against TVMaze titles.
+          3. Sequential-index fallback: treat the episode number as a 1-based
+             index into the TVMaze-ordered episode list. Applies to seasonless
+             bare-episode parses, and to flattened "Season 01" files when the
+             show has no real season 1 on TVMaze (year-based seasons).
+
+        Anything unresolved is left exactly as parsed and logged loudly.
+        """
+        try:
+            from ..tvmaze import get_show_episodes
+            eps = get_show_episodes(show, logger=self._logger)
+        except Exception as e:
+            self._logger.debug("Renumber: episode fetch failed for '%s': %s", show, e)
+            return season, episode
+        if not eps:
+            return season, episode
+
+        s_num, e_num = int(season), int(episode)
+
+        # 1. Already a genuine TVMaze episode — trust the explicit numbering.
+        if any(ep["season"] == s_num and ep["episode"] == e_num for ep in eps):
+            return season, episode
+
+        ordered = sorted(eps, key=lambda ep: (ep["season"], ep["episode"]))
+
+        # 2. Title match (robust against reordered / alternate numbering).
+        if detail.title_hint:
+            m = _match_episode_by_title(ordered, detail.title_hint)
+            if m:
+                self._logger.info(
+                    "Renumber '%s' S%sE%s → S%02dE%02d via title '%s' (TVMaze '%s')",
+                    show, season, episode, m["season"], m["episode"],
+                    detail.title_hint, m.get("title", ""))
+                return f"{m['season']:02d}", f"{m['episode']:02d}"
+
+        # 3. Sequential-index fallback.
+        tvmaze_has_season_1 = any(ep["season"] == 1 for ep in ordered)
+        index_eligible = detail.seasonless or (s_num == 1 and not tvmaze_has_season_1)
+        if index_eligible and 1 <= e_num <= len(ordered):
+            m = ordered[e_num - 1]
+            self._logger.info(
+                "Renumber '%s' S%sE%s → S%02dE%02d via sequential index (#%d of %d)",
+                show, season, episode, m["season"], m["episode"], e_num, len(ordered))
+            return f"{m['season']:02d}", f"{m['episode']:02d}"
+
+        self._logger.warning(
+            "Renumber: '%s' S%sE%s not found in TVMaze (%d eps) and no confident "
+            "match — keeping as-is", show, season, episode, len(ordered))
+        return season, episode
 
     def _episode_title(self, show: str, season: str, episode: str) -> str:
         """Best-effort episode title from TVMaze; "" if unavailable."""
@@ -389,13 +566,25 @@ class CleanService(BaseCleanService):
         if bare in self._show_canonical:
             return self._show_canonical[bare]
 
-        # TVMaze lookup
+        # TVMaze lookup, keyed by show id so name-variants collapse.
         try:
-            from ..tvmaze import lookup_show
+            from ..tvmaze import lookup_show, resolve_show_id
             result = lookup_show(show, logger=self._logger)
             if result:
                 canonical, year = result
                 verified = f"{canonical} ({year})" if year else canonical
+                sid = resolve_show_id(show, logger=self._logger)
+                if sid is not None:
+                    if sid in self._id_canonical:
+                        # Another spelling already owns this show id — collapse.
+                        chosen = self._id_canonical[sid]
+                        if chosen != verified:
+                            self._logger.info(
+                                "TVMaze id-collapse: '%s' → '%s' (show id %d)",
+                                show, chosen, sid)
+                        verified = chosen
+                    else:
+                        self._id_canonical[sid] = verified
                 if verified.lower() != show.lower():
                     self._logger.info("TVMaze verify: '%s' → '%s'", show, verified)
                 self._show_canonical[bare] = verified
@@ -487,6 +676,9 @@ class CleanService(BaseCleanService):
         show_folder = show.strip() or "Unknown Show"
         season_folder = root / show_folder / f"Season {season}"
         base_show = re.sub(r"\s+", ".", show_folder)
+        # Collapse dot runs so a dotted show name ("C.S. Forester's …") doesn't
+        # yield "C.S..Forester's" once spaces become dots.
+        base_show = re.sub(r"\.+", ".", base_show)
         suffix = episode_title_suffix(title)
         title_part = f".{suffix}" if suffix else ""
         filename = f"{base_show}.S{season}E{episode}{title_part}{ext.lower()}"
