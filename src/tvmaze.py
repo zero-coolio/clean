@@ -51,11 +51,14 @@ _SHARED_CACHE_PATH = Path(
 _cache: dict[str, tuple[str, str] | None] = {}
 _cache_dirty = False
 
-# In-process only (NOT persisted): query_key → TVMaze show id. Populated by
-# lookup_show as a side effect; used to fetch a show's episode list on a
-# shared-cache miss. Not persisted because the shared episode cache already
-# makes repeat lookups free.
+# query_key → TVMaze show id. Populated by lookup_show on a match and persisted
+# to `.tvmaze_id_cache.json` (sibling of `_CACHE_PATH`). Persistence matters for
+# the id-based collapse in clean_service: lookup_show early-returns on a warm
+# name-cache hit WITHOUT re-deriving the id, so without a persisted id map the
+# numeric id would be unavailable in steady state and collapse would no-op.
 _id_cache: dict[str, int] = {}
+_id_cache_dirty = False
+_ID_CACHE_PATH = _CACHE_PATH.parent / ".tvmaze_id_cache.json"
 
 # Shared episode cache, loaded lazily from _SHARED_CACHE_PATH:
 #   normalized_show_key → {"episodes": [...], "fetchedAt": "..."}
@@ -99,6 +102,29 @@ def _save_cache() -> None:
         serializable = {k: list(v) if v else None for k, v in _cache.items()}
         _CACHE_PATH.write_text(json.dumps(serializable, indent=2, ensure_ascii=False), encoding="utf-8")
         _cache_dirty = False
+    except Exception:
+        pass
+
+
+def _load_id_cache() -> None:
+    global _id_cache
+    if _ID_CACHE_PATH.exists():
+        try:
+            raw = json.loads(_ID_CACHE_PATH.read_text(encoding="utf-8"))
+            _id_cache = {k: int(v) for k, v in raw.items() if v is not None}
+        except Exception:
+            pass
+
+
+def _save_id_cache() -> None:
+    global _id_cache_dirty
+    if not _id_cache_dirty:
+        return
+    try:
+        _ID_CACHE_PATH.write_text(
+            json.dumps(_id_cache, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        _id_cache_dirty = False
     except Exception:
         pass
 
@@ -155,6 +181,7 @@ def _save_episodes_cache(data: dict[str, dict]) -> None:
 
 
 _load_cache()
+_load_id_cache()
 
 # Rate limiting
 _last_request: float = 0.0
@@ -197,6 +224,18 @@ def _query_variants(name: str) -> list[str]:
     stripped = _strip_stopwords(base)
     if stripped and stripped != base and stripped not in variants:
         variants.append(stripped)
+
+    # Last-resort tail fallbacks for long, noisy names where the distinctive
+    # title sits at the END after author/initial cruft, e.g.
+    # "C S Forester's Horatio Hornblower" → "Horatio Hornblower". Tried LAST
+    # (lowest priority) and only for 4+ word names, so they never override a
+    # confident full-name match and can't mangle short titles.
+    words = base.split()
+    if len(words) >= 4:
+        for n in (3, 2):
+            tail = " ".join(words[-n:])
+            if tail not in variants:
+                variants.append(tail)
 
     return variants
 
@@ -277,7 +316,7 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
     year_m = _RE_YEAR.search(name)
     year = year_m.group(1) if year_m else None
 
-    global _cache_dirty
+    global _cache_dirty, _id_cache_dirty
     for query in _query_variants(name):
         results = _search(query)
         match = _best_match(results, year)
@@ -288,7 +327,9 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
             _cache[cache_key] = result
             _cache_dirty = True
             _save_cache()
-            _id_cache[cache_key] = sid  # in-process only; see _id_cache note
+            _id_cache[cache_key] = sid
+            _id_cache_dirty = True
+            _save_id_cache()
             if logger:
                 logger.info("TVMaze: '%s' → '%s (%s)' (query: '%s')", name, canonical, found_year, query)
             return result
@@ -302,12 +343,34 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
 
 
 def _resolve_show_id(name: str, logger=None) -> int | None:
-    """Resolve a TVMaze show id for a name, using the in-process id cache."""
+    """Resolve a TVMaze show id for a name, using the persisted id cache.
+
+    On a miss, `lookup_show` populates the id as a side effect (network search).
+    But `lookup_show` early-returns on a warm NAME-cache hit without re-deriving
+    the id — so for names already in `.tvmaze_cache.json` we fall back to a
+    direct search to recover and persist the id.
+    """
+    global _id_cache_dirty
     cache_key = name.lower().strip()
-    if cache_key not in _id_cache:
-        # lookup_show populates _id_cache as a side effect on a match.
-        lookup_show(name, logger=logger)
-    return _id_cache.get(cache_key)
+    if cache_key in _id_cache:
+        return _id_cache[cache_key]
+
+    # Triggers a network search + id population on a name-cache miss.
+    lookup_show(name, logger=logger)
+    if cache_key in _id_cache:
+        return _id_cache[cache_key]
+
+    # Warm name-cache hit with no recorded id: resolve the id directly.
+    year_m = _RE_YEAR.search(name)
+    year = year_m.group(1) if year_m else None
+    for query in _query_variants(name):
+        match = _best_match(_search(query), year)
+        if match:
+            _id_cache[cache_key] = match[0]
+            _id_cache_dirty = True
+            _save_id_cache()
+            return match[0]
+    return None
 
 
 def _fetch_all_episodes(show_id: int) -> list[dict]:
@@ -407,3 +470,29 @@ def lookup_movie(name: str, logger=None) -> tuple[str, str] | None:
     """
     # TVMaze is TV-focused; reuse show search as best-effort
     return lookup_show(name, logger=logger)
+
+
+# =============================================================================
+# Public helpers for show-id-based collapsing / renumbering (clean_service)
+# =============================================================================
+
+def resolve_show_id(name: str, logger=None) -> int | None:
+    """Public: the TVMaze numeric show id for a name, or None if unresolved.
+
+    Thin wrapper over `_resolve_show_id` (which populates the in-process id
+    cache as a side effect of `lookup_show`). Two different spellings that
+    resolve to the same series return the same id — the basis for collapsing
+    name-variant folders into one canonical show.
+    """
+    return _resolve_show_id(name, logger=logger)
+
+
+def get_show_episodes(name: str, logger=None) -> list[dict] | None:
+    """Public: a show's full episode list, or None if the show can't resolve.
+
+    Each entry is ``{"season", "episode", "title", "airdate"}`` in TVMaze's
+    own (possibly year-based) season numbering. Served from the shared episode
+    cache when present, otherwise one `/shows/{id}/episodes` fetch. Used to
+    renumber loosely-parsed / seasonless episodes to TVMaze's actual seasons.
+    """
+    return _ensure_show_episodes(name, logger=logger)
