@@ -21,7 +21,6 @@ from ..utils import (
     safe_delete,
     safe_move,
     undo_from_journal,
-    unique_path,
 )
 
 

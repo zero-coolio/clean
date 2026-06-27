@@ -114,21 +114,74 @@ def sha1sum(path: Path, limit_bytes: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
-def same_content(a: Path, b: Path, logger=None) -> bool:
-    """Check if two files have identical content (size + partial hash).
-    
+def _files_equal(a: Path, b: Path, chunk_size: int = 1024 * 1024) -> bool:
+    """Stream two files in lockstep and compare them chunk-by-chunk.
+
+    Bounded memory: only one chunk per file is held at a time, so this works on
+    multi-GB videos without loading them into RAM. Early-exits on the first
+    differing byte, so files that share a size but diverge are rejected as soon
+    as they differ — only genuinely identical files are read to the end.
+
     Args:
         a: First file path.
         b: Second file path.
-        logger: Optional logger for error reporting.
-        
+        chunk_size: Bytes to read per file per iteration (default 1 MB).
+
     Returns:
-        True if files appear to have the same content.
+        True if the files are byte-for-byte identical.
+    """
+    with a.open("rb") as fa, b.open("rb") as fb:
+        while True:
+            chunk_a = fa.read(chunk_size)
+            chunk_b = fb.read(chunk_size)
+            if chunk_a != chunk_b:
+                return False
+            if not chunk_a:  # both reached EOF together
+                return True
+
+
+def same_content(a: Path, b: Path, logger=None) -> bool:
+    """Check whether two files have byte-identical content.
+
+    This guards a near-irreversible delete path — the caller trashes the source
+    when this returns True — so it must never yield a false positive. Strategy:
+
+      1. Size mismatch → definitely different (cheap, rejects most pairs).
+      2. Same size → stream both files and compare in full (see _files_equal).
+
+    The full compare early-exits on the first differing byte, so distinct files
+    that merely share a size are rejected cheaply; only true duplicates are read
+    to the end. A previous version hashed only the first 1 MB, which meant two
+    different episodes with identical size and matching headers could collide
+    and be falsely deduped and deleted. The full compare closes that hole.
+
+    Args:
+        a: First file path.
+        b: Second file path.
+        logger: Optional logger for diagnostics.
+
+    Returns:
+        True only if the files are byte-for-byte identical.
     """
     try:
-        if a.stat().st_size != b.stat().st_size:
+        size_a, size_b = a.stat().st_size, b.stat().st_size
+        if size_a != size_b:
+            if logger:
+                logger.debug(
+                    "same_content: size differs (%d != %d), not a duplicate: %s vs %s",
+                    size_a, size_b, a, b,
+                )
             return False
-        return sha1sum(a) == sha1sum(b)
+        equal = _files_equal(a, b)
+        if logger:
+            if equal:
+                logger.debug("same_content: byte-identical (%d bytes): %s == %s", size_a, a, b)
+            else:
+                logger.warning(
+                    "same_content: same size (%d bytes) but content differs — NOT a duplicate: %s vs %s",
+                    size_a, a, b,
+                )
+        return equal
     except OSError as e:
         if logger:
             logger.debug("Error comparing %s and %s: %s", a, b, e)
