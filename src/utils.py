@@ -317,6 +317,16 @@ def undo_from_journal(journal_path: Path, logger=None) -> None:
             path = entry.get("path")
             if logger:
                 logger.warning("CANNOT UNDO %s: %s", op.upper(), path)
+
+        elif op == "qbit_remove":
+            # The data was kept (deleteFiles=false), but re-adding the torrent
+            # to qBittorrent is not automatable here — surface it for the user.
+            if logger:
+                logger.warning(
+                    "CANNOT UNDO QBIT_REMOVE: torrent %r (%s) was removed from "
+                    "qBittorrent; re-add it manually if you want to resume seeding",
+                    entry.get("name", "?"), entry.get("hash", "?"),
+                )
     
     if logger:
         logger.info("Undo complete from: %s", journal_path)
