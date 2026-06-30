@@ -164,3 +164,45 @@ class TestIdCollapse:
         svc = CleanService()
         assert svc._canonical_show("Show A", "01", "01") == "Show A (2001)"
         assert svc._canonical_show("Show B", "01", "01") == "Show B (2002)"
+
+
+# ---------------------------------------------------------------------------
+# lookup_episode_name: placeholder ("TBA") titles must not become filenames
+# ---------------------------------------------------------------------------
+
+class TestPlaceholderTitle:
+    """An unannounced episode (TVMaze title "TBA") must yield no title, so the
+    filename stays Show.(Year).SxxExx.ext rather than baking in a fake title."""
+
+    # season-based list mixing a real title with TVMaze placeholders
+    EPS = [
+        {"season": 3, "episode": 1, "title": "A Son Who Bleeds", "airdate": ""},
+        {"season": 3, "episode": 2, "title": "TBA", "airdate": ""},
+        {"season": 3, "episode": 3, "title": "  tbd ", "airdate": ""},
+        {"season": 3, "episode": 4, "title": "To Be Announced", "airdate": ""},
+    ]
+
+    def _patch(self, monkeypatch) -> None:
+        monkeypatch.setattr(tvmaze, "_ensure_show_episodes", lambda name, logger=None: self.EPS)
+
+    def test_real_title_passes_through(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        assert tvmaze.lookup_episode_name("House of the Dragon", 3, 1) == "A Son Who Bleeds"
+
+    def test_tba_collapses_to_none(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        assert tvmaze.lookup_episode_name("House of the Dragon", 3, 2) is None
+
+    def test_tbd_with_whitespace_and_case_collapses(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        assert tvmaze.lookup_episode_name("House of the Dragon", 3, 3) is None
+
+    def test_to_be_announced_collapses(self, monkeypatch) -> None:
+        self._patch(monkeypatch)
+        assert tvmaze.lookup_episode_name("House of the Dragon", 3, 4) is None
+
+    def test_real_title_helper_keeps_numbered_episode_titles(self) -> None:
+        # "Episode 6" (British numbered shows) is a genuine title, not a placeholder.
+        assert tvmaze._real_title("Episode 6") == "Episode 6"
+        assert tvmaze._real_title("") is None
+        assert tvmaze._real_title(None) is None
