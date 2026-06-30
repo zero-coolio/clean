@@ -425,6 +425,27 @@ def _ensure_show_episodes(name: str, logger=None) -> list[dict] | None:
     return episodes
 
 
+# TVMaze placeholder titles for episodes that exist but have no announced
+# title yet (unaired / not-yet-titled). These must never be baked into a
+# filename as if they were a real episode title — see _real_title.
+_PLACEHOLDER_TITLES = {"tba", "tbd", "to be announced", "to be determined"}
+
+
+def _real_title(title: str | None) -> str | None:
+    """Return a genuine episode title, or None for empty/placeholder values.
+
+    TVMaze lists unannounced episodes with a placeholder like "TBA". Treating
+    that as a real title bakes a fake name into the filename (e.g.
+    ``House.of.the.Dragon.(2022).S03E02.TBA.avi``), so placeholders collapse to
+    None and no title suffix is appended.
+    """
+    if not title:
+        return None
+    if title.strip().lower() in _PLACEHOLDER_TITLES:
+        return None
+    return title
+
+
 def lookup_episode_name(
     name: str, season: str | int, episode: str | int, logger=None
 ) -> str | None:
@@ -452,7 +473,7 @@ def lookup_episode_name(
 
     for ep in episodes:
         if ep.get("season") == s_num and ep.get("episode") == e_num:
-            title = ep.get("title") or None
+            title = _real_title(ep.get("title"))
             if logger and title:
                 logger.info("TVMaze episode: '%s' S%02dE%02d → '%s'", name, s_num, e_num, title)
             return title
