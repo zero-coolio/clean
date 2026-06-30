@@ -22,13 +22,17 @@ MOVIE_DEST="${CLEAN_MOVIE_DEST:-/Volumes/Seagate/seagate-movie}"
 LOG_FILE="$SCRIPT_DIR/../logs/watch-tv.log"
 LOCK_FILE="$SCRIPT_DIR/../logs/.watch-tv.lock"
 PENDING_FILE="$SCRIPT_DIR/../logs/.watch-tv-pending.txt"
+# Epoch time of the last actual clean run, persisted to a FILE (not just an
+# in-memory var) so the debounce survives launchd relaunching the script. A
+# crash + KeepAlive respawn must NOT bypass the debounce and re-run clean
+# back-to-back — that was the 2026-06-28 respawn loop (~11s metronome).
+LASTRUN_FILE="$SCRIPT_DIR/../logs/.watch-tv-lastrun"
 DEBOUNCE_SECONDS=30
 # Quiet period: after a change, wait this long with no further events before
 # running, and after a run, swallow events for this long. This coalesces bursts
 # AND absorbs the flurry of events clean emits while moving files (which used to
 # re-trigger the watcher in an endless loop).
 SETTLE_SECONDS=15
-LAST_RUN=0
 
 # Create logs directory
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -56,9 +60,16 @@ run_clean() {
     fi
 
     local now=$(date +%s)
-    local elapsed=$((now - LAST_RUN))
+    local last_run=0
+    if [ -f "$LASTRUN_FILE" ]; then
+        last_run=$(cat "$LASTRUN_FILE" 2>/dev/null || echo 0)
+        [ -n "$last_run" ] || last_run=0
+    fi
+    local elapsed=$((now - last_run))
 
-    # Debounce: skip if we ran recently
+    # Debounce: skip if we ran recently. last_run is read from a file above, so
+    # this holds even across a launchd respawn — a death+restart cycle can never
+    # turn into a back-to-back clean loop.
     if [ $elapsed -lt $DEBOUNCE_SECONDS ]; then
         log "Skipping (ran ${elapsed}s ago, debounce is ${DEBOUNCE_SECONDS}s)"
         return
@@ -81,14 +92,14 @@ run_clean() {
     echo "$$" > "$LOCK_FILE"
     trap "rm -f '$LOCK_FILE'" EXIT
     
-    LAST_RUN=$now
+    echo "$now" > "$LASTRUN_FILE"
     log "Running clean-tv..."
 
     # Build file list from accumulated pending files
     local file_msg="Processing new files..."
     if [ -f "$PENDING_FILE" ] && [ -s "$PENDING_FILE" ]; then
         local names
-        names=$(sort -u "$PENDING_FILE" | xargs -I{} basename "{}" | head -5 | tr '\n' '\n')
+        names=$(sort -u "$PENDING_FILE" | head -5 | while IFS= read -r p; do basename -- "$p"; done)
         local total
         total=$(sort -u "$PENDING_FILE" | wc -l | tr -d ' ')
         local shown
@@ -122,7 +133,10 @@ run_clean() {
     local VIDEO_DELETE_THRESHOLD=3
     log "Running clean-movie dry-run safety check..."
     local dry_out
-    dry_out=$(eval "$movie_base" 2>&1)
+    # Guard with `|| true`: a non-zero clean-movie dry-run must NOT kill the
+    # watcher under `set -e`. That unguarded failure, plus launchd respawning
+    # the script with a non-persistent debounce, WAS the 2026-06-28 loop.
+    dry_out=$(eval "$movie_base" 2>&1 || true)
     local conflict_count
     conflict_count=$(echo "$dry_out" | grep -c "CONFLICT:" || true)
     log "clean-movie dry-run: $conflict_count potential video file deletion(s)"
@@ -176,7 +190,7 @@ fi
 # One-shot mode
 if [ "$1" == "--once" ]; then
     log "Running once..."
-    LAST_RUN=0
+    rm -f "$LASTRUN_FILE"   # force a run regardless of the persisted debounce
     run_clean
     exit 0
 fi

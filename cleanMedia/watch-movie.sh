@@ -21,11 +21,14 @@ WATCH_DIR="${CLEAN_MOVIE_DIR:-/Volumes/Seagate/seagate-movie}"
 LOG_FILE="$SCRIPT_DIR/../logs/watch-movie.log"
 LOCK_FILE="$SCRIPT_DIR/../logs/.watch-movie.lock"
 PENDING_FILE="$SCRIPT_DIR/../logs/.watch-movie-pending.txt"
+# Epoch time of the last actual clean run, persisted to a FILE so the debounce
+# survives a launchd respawn (a death+restart must not re-run clean back-to-back
+# in a loop). See watch-tv.sh / the 2026-06-28 respawn-loop fix.
+LASTRUN_FILE="$SCRIPT_DIR/../logs/.watch-movie-lastrun"
 DEBOUNCE_SECONDS=30
 # Quiet period: coalesce bursts and swallow events clean emits during its own
 # run, so the watcher can't re-trigger itself in a loop. See watch-tv.sh.
 SETTLE_SECONDS=15
-LAST_RUN=0
 
 # Create logs directory
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -51,9 +54,14 @@ run_clean() {
     fi
 
     local now=$(date +%s)
-    local elapsed=$((now - LAST_RUN))
+    local last_run=0
+    if [ -f "$LASTRUN_FILE" ]; then
+        last_run=$(cat "$LASTRUN_FILE" 2>/dev/null || echo 0)
+        [ -n "$last_run" ] || last_run=0
+    fi
+    local elapsed=$((now - last_run))
 
-    # Debounce: skip if we ran recently
+    # Debounce: skip if we ran recently. Survives a launchd respawn (see above).
     if [ $elapsed -lt $DEBOUNCE_SECONDS ]; then
         log "Skipping (ran ${elapsed}s ago, debounce is ${DEBOUNCE_SECONDS}s)"
         return
@@ -76,14 +84,14 @@ run_clean() {
     echo "$$" > "$LOCK_FILE"
     trap "rm -f '$LOCK_FILE'" EXIT
     
-    LAST_RUN=$now
+    echo "$now" > "$LASTRUN_FILE"
     log "Running clean-movie..."
 
     # Build file list from accumulated pending files
     local file_msg="Processing new files..."
     if [ -f "$PENDING_FILE" ] && [ -s "$PENDING_FILE" ]; then
         local names
-        names=$(sort -u "$PENDING_FILE" | xargs -I{} basename "{}" | head -5)
+        names=$(sort -u "$PENDING_FILE" | head -5 | while IFS= read -r p; do basename -- "$p"; done)
         local total
         total=$(sort -u "$PENDING_FILE" | wc -l | tr -d ' ')
         local shown
@@ -142,7 +150,7 @@ fi
 # One-shot mode
 if [ "$1" == "--once" ]; then
     log "Running once..."
-    LAST_RUN=0
+    rm -f "$LASTRUN_FILE"   # force a run regardless of the persisted debounce
     run_clean
     exit 0
 fi

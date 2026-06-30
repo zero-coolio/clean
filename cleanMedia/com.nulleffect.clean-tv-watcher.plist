@@ -21,10 +21,19 @@
             <true/>
         </dict>
     </dict>
-    
+
+    <!-- Backstop: never respawn the script faster than this many seconds, even
+         if it exits immediately. launchd's default floor is 10s, which is what
+         drove the 2026-06-28 ~11s respawn loop. -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <!-- stdout is discarded: watch-tv.sh already tees everything to
+         logs/watch-tv.log (rotated daily). This stops a redundant multi-GB
+         launchd-stdout.log from being written. stderr is kept (small). -->
     <key>StandardOutPath</key>
-    <string>/Users/stephenleonard/git/nulleffect/CleanMedia/logs/launchd-stdout.log</string>
-    
+    <string>/dev/null</string>
+
     <key>StandardErrorPath</key>
     <string>/Users/stephenleonard/git/nulleffect/CleanMedia/logs/launchd-stderr.log</string>
     
