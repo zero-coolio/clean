@@ -38,7 +38,8 @@ def _run_set_defaults(tracks):
         m.stderr = ""
         return m
 
-    with patch.object(audio_tracks, "get_track_info", return_value={"tracks": tracks}), \
+    info = {"container": {"type": "Matroska"}, "tracks": tracks}
+    with patch.object(audio_tracks, "get_track_info", return_value=info), \
          patch.object(audio_tracks.subprocess, "run", side_effect=fake_run):
         changed = audio_tracks.set_track_defaults(
             Path("/x/foo.mkv"), logging.getLogger("test"), commit=True
@@ -64,6 +65,31 @@ def test_english_audio_made_default_with_type_relative_selector():
     assert cmd[i - 1] == "--edit" and cmd[i + 1] == "--set" and cmd[i + 2] == "flag-default=1"
     j = cmd.index("track:a1")
     assert cmd[j + 2] == "flag-default=0"
+
+
+def test_non_matroska_container_is_skipped_without_mkvpropedit():
+    # A .mkv-named file that is really MP4: mkvmerge reads it, but mkvpropedit
+    # can't edit it — skip cleanly instead of attempting (and mis-reporting) it.
+    tracks = [
+        {"id": 0, "type": "video", "properties": {}},
+        {"id": 1, "type": "audio", "properties": {"language": "ita", "default_track": True}},
+        {"id": 2, "type": "audio", "properties": {"language": "eng", "default_track": False}},
+    ]
+    called = {"run": False}
+
+    def fake_run(cmd, **kwargs):
+        called["run"] = True
+        m = MagicMock(); m.returncode = 0; m.stderr = ""
+        return m
+
+    info = {"container": {"type": "MP4/QuickTime"}, "tracks": tracks}
+    with patch.object(audio_tracks, "get_track_info", return_value=info), \
+         patch.object(audio_tracks.subprocess, "run", side_effect=fake_run):
+        changed = audio_tracks.set_track_defaults(
+            Path("/x/foo.mkv"), logging.getLogger("test"), commit=True
+        )
+    assert changed is False
+    assert called["run"] is False   # mkvpropedit never invoked
 
 
 def test_default_english_audio_is_left_alone():

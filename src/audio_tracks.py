@@ -123,7 +123,17 @@ def set_track_defaults(
     info = get_track_info(path, logger)
     if not info:
         return False
-    
+
+    # mkvmerge -J happily reads MP4/AVI/etc., but mkvpropedit only edits
+    # Matroska. Guard against files with a .mkv extension that are actually a
+    # different container (e.g. an MP4 misnamed .mkv) — otherwise mkvpropedit
+    # fails later with a misleading "not a Matroska file" error.
+    container = info.get("container", {}).get("type", "")
+    if container != "Matroska":
+        logger.warning("SKIP (not a Matroska file, container=%s): %s",
+                       container or "unknown", path.name)
+        return False
+
     tracks = info.get("tracks", [])
     if not tracks:
         return False
