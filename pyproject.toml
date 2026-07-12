@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clean-media"
-version = "1.0.0"
+version = "1.1.0-rc.1"
 description = "Safety-critical media organizers for TV shows and Movies"
 readme = "README.md"
 requires-python = ">=3.10"
