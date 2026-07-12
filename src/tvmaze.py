@@ -4,23 +4,53 @@
 Ported from lime/TVMazeService.swift.
 
 Usage:
-    from .tvmaze import lookup_show, lookup_movie
+    from .tvmaze import lookup_show
 
     result = lookup_show("Top Gear (2002)")
     # → ("Top Gear", "2002") or None
-
-    result = lookup_movie("The Matrix (1999)")
-    # → ("The Matrix", "1999") or None
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+# Module logger for cache/network diagnostics. These code paths run deep inside
+# a clean and historically swallowed every error silently; logging at DEBUG
+# keeps normal runs quiet while making corruption / permission / disk-full
+# problems visible when the level is turned up.
+_log = logging.getLogger(__name__)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write `text` to `path` atomically via a temp sibling + os.replace.
+
+    The cache savers below fire on essentially every lookup, so a crash (or a
+    full disk) mid-write must never leave a half-written, unparseable JSON file
+    behind. Writing to a temp file in the SAME directory and then os.replace-ing
+    it over the target is atomic on a single filesystem: a reader sees either
+    the complete old file or the complete new one, never a truncated mix.
+
+    Args:
+        path: Destination file.
+        text: Full file contents to write.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        # Don't leave a stray temp file behind on a failed write.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 _STOPWORDS = {
     "a", "an", "the", "and", "or", "of", "in", "on", "at", "to",
@@ -90,8 +120,11 @@ def _load_cache() -> None:
             raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
             # Values are stored as [name, year] or null
             _cache = {k: (tuple(v) if v else None) for k, v in raw.items()}
-        except Exception:
-            pass
+            _log.debug("TVMaze: loaded %d name-cache entries from %s", len(_cache), _CACHE_PATH)
+        except Exception as e:
+            # Corrupt/unreadable cache is non-fatal — we just start cold and
+            # rebuild it — but log it so silent corruption isn't invisible.
+            _log.debug("TVMaze: failed to load name cache from %s: %s", _CACHE_PATH, e)
 
 
 def _save_cache() -> None:
@@ -100,10 +133,10 @@ def _save_cache() -> None:
         return
     try:
         serializable = {k: list(v) if v else None for k, v in _cache.items()}
-        _CACHE_PATH.write_text(json.dumps(serializable, indent=2, ensure_ascii=False), encoding="utf-8")
+        _atomic_write_text(_CACHE_PATH, json.dumps(serializable, indent=2, ensure_ascii=False))
         _cache_dirty = False
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("TVMaze: failed to save name cache to %s: %s", _CACHE_PATH, e)
 
 
 def _load_id_cache() -> None:
@@ -112,8 +145,9 @@ def _load_id_cache() -> None:
         try:
             raw = json.loads(_ID_CACHE_PATH.read_text(encoding="utf-8"))
             _id_cache = {k: int(v) for k, v in raw.items() if v is not None}
-        except Exception:
-            pass
+            _log.debug("TVMaze: loaded %d id-cache entries from %s", len(_id_cache), _ID_CACHE_PATH)
+        except Exception as e:
+            _log.debug("TVMaze: failed to load id cache from %s: %s", _ID_CACHE_PATH, e)
 
 
 def _save_id_cache() -> None:
@@ -121,12 +155,12 @@ def _save_id_cache() -> None:
     if not _id_cache_dirty:
         return
     try:
-        _ID_CACHE_PATH.write_text(
-            json.dumps(_id_cache, indent=2, ensure_ascii=False), encoding="utf-8"
+        _atomic_write_text(
+            _ID_CACHE_PATH, json.dumps(_id_cache, indent=2, ensure_ascii=False)
         )
         _id_cache_dirty = False
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("TVMaze: failed to save id cache to %s: %s", _ID_CACHE_PATH, e)
 
 
 def _load_episodes_cache() -> dict[str, dict]:
@@ -147,7 +181,15 @@ def _load_episodes_cache() -> dict[str, dict]:
     if _SHARED_CACHE_PATH.exists():
         try:
             _episodes_cache = json.loads(_SHARED_CACHE_PATH.read_text(encoding="utf-8"))
-        except Exception:
+            _log.debug(
+                "TVMaze: loaded %d shared episode-cache entries from %s",
+                len(_episodes_cache), _SHARED_CACHE_PATH,
+            )
+        except Exception as e:
+            _log.debug(
+                "TVMaze: failed to load shared episode cache from %s: %s",
+                _SHARED_CACHE_PATH, e,
+            )
             _episodes_cache = {}
     else:
         _episodes_cache = {}
@@ -170,14 +212,21 @@ def _save_episodes_cache(data: dict[str, dict]) -> None:
         if _SHARED_CACHE_PATH.exists():
             try:
                 merged = json.loads(_SHARED_CACHE_PATH.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as e:
+                # Treat an unreadable existing cache as empty rather than
+                # aborting the write, but log it — silently discarding other
+                # shows' cached entries would be an invisible data loss.
+                _log.debug(
+                    "TVMaze: shared episode cache at %s unreadable, rewriting from scratch: %s",
+                    _SHARED_CACHE_PATH, e,
+                )
                 merged = {}
         merged.update(data)
-        _SHARED_CACHE_PATH.write_text(
-            json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8"
+        _atomic_write_text(
+            _SHARED_CACHE_PATH, json.dumps(merged, indent=2, ensure_ascii=False)
         )
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("TVMaze: failed to save shared episode cache to %s: %s", _SHARED_CACHE_PATH, e)
 
 
 _load_cache()
@@ -247,7 +296,8 @@ def _search(query: str) -> list[dict]:
     try:
         with urllib.request.urlopen(url, timeout=5) as resp:
             return json.loads(resp.read())
-    except Exception:
+    except Exception as e:
+        _log.debug("TVMaze: search failed for %r: %s", query, e)
         return []
 
 
@@ -385,7 +435,8 @@ def _fetch_all_episodes(show_id: int) -> list[dict]:
     try:
         with urllib.request.urlopen(url, timeout=5) as resp:
             data = json.loads(resp.read())
-    except Exception:
+    except Exception as e:
+        _log.debug("TVMaze: episode fetch failed for show id %s: %s", show_id, e)
         return []
     episodes = []
     for ep in data:
@@ -478,19 +529,6 @@ def lookup_episode_name(
                 logger.info("TVMaze episode: '%s' S%02dE%02d → '%s'", name, s_num, e_num, title)
             return title
     return None
-
-
-def lookup_movie(name: str, logger=None) -> tuple[str, str] | None:
-    """Look up a movie on TVMaze (covers TV movies and mini-series).
-
-    Falls back gracefully — movies are less reliable on TVMaze so this
-    is best-effort only.
-
-    Returns:
-        (canonical_name, year) or None.
-    """
-    # TVMaze is TV-focused; reuse show search as best-effort
-    return lookup_show(name, logger=logger)
 
 
 # =============================================================================
