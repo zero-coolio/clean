@@ -21,10 +21,16 @@
             <true/>
         </dict>
     </dict>
-    
+
+    <!-- Backstop against a fast respawn loop (launchd's default floor is 10s). -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <!-- stdout discarded: watch-movie.sh tees everything to logs/watch-movie.log
+         (rotated daily). stderr is kept (small). -->
     <key>StandardOutPath</key>
-    <string>/Users/stephenleonard/git/nulleffect/CleanMedia/logs/launchd-movie-stdout.log</string>
-    
+    <string>/dev/null</string>
+
     <key>StandardErrorPath</key>
     <string>/Users/stephenleonard/git/nulleffect/CleanMedia/logs/launchd-movie-stderr.log</string>
     

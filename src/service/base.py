@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES
 from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
+from ..qbittorrent import QbitReaper
 from ..utils import (
     cleanup_empty_dirs,
     is_english_subtitle,
@@ -44,6 +45,9 @@ class BaseCleanService(ABC):
         """
         self._logger = logger
         self._source_folders: set[Path] = set()
+        # Built once per run() — see _make_qbit_reaper. None when qBittorrent
+        # integration is disabled or the client is unreachable.
+        self._qbit: QbitReaper | None = None
     
     # =========================================================================
     # Abstract methods - subclasses must implement
@@ -425,6 +429,15 @@ class BaseCleanService(ABC):
                         safe_delete(path, commit, journal, self._logger)
                         return
 
+            # qBittorrent: remove a completed torrent (keeping its data) before
+            # we move its file; skip files owned by an incomplete torrent
+            # ("possible zombie") so we never rename a still-downloading file.
+            if self._qbit is not None:
+                should_move, skip_reason = self._qbit.clear_to_move(path, commit, journal)
+                if not should_move:
+                    unexpected.append(f"{path} ({skip_reason})")
+                    return
+
             # Move the file
             self._logger.info("MOVE: %s -> %s", path, dest)
             if not self.is_clean_folder_name(path.parent.name):
@@ -495,6 +508,23 @@ class BaseCleanService(ABC):
         
         return False
     
+    def _make_qbit_reaper(self) -> "QbitReaper | None":
+        """Build the per-run qBittorrent reaper from config.
+
+        Isolated so it can be overridden in tests. Returns None when the
+        integration is disabled or qBittorrent is unreachable, in which case
+        clean proceeds with normal renames.
+        """
+        from ..config import (
+            QBIT_ENABLED, QBIT_HOST, QBIT_PORT,
+            QBIT_USER, QBIT_PASS, QBIT_TIMEOUT,
+        )
+        return QbitReaper.create(
+            enabled=QBIT_ENABLED, host=QBIT_HOST, port=QBIT_PORT,
+            username=QBIT_USER, password=QBIT_PASS, timeout=QBIT_TIMEOUT,
+            logger=self._logger,
+        )
+
     def run(
         self,
         root: Path,
@@ -535,6 +565,10 @@ class BaseCleanService(ABC):
             root, commit, plan, quarantine, dest or "(same as root)",
             f"{since_seconds:.0f}s (mtime >= {cutoff:.0f})" if cutoff is not None else "(full)",
         )
+
+        # qBittorrent remove-before-rename: build the reaper once per run (one
+        # torrents/info fetch), not once per file. None if disabled/unreachable.
+        self._qbit = self._make_qbit_reaper()
 
         # Pre-run hook (e.g. folder rename hints)
         self._before_run(root, commit, journal)

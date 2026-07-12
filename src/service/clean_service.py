@@ -149,6 +149,22 @@ def _clean_show_name(raw_show: str, remainder: str) -> str:
     return show
 
 
+def _has_real_show_text(show: str) -> bool:
+    """True when `show` has actual title text beyond a year and punctuation.
+
+    Guards against filing under a show folder named only after a year (e.g.
+    "(2016)"), which happens when an episode filename STARTS with SxxExx and the
+    real show name lives only in the parent folder. A show whose entire name is
+    just a 19xx/20xx year is treated as "no real name" (vanishingly rare for TV,
+    and the caller falls back to the parent folder rather than mis-filing).
+    """
+    if not show:
+        return False
+    residue = re.sub(r"\(?(?:19|20)\d{2}\)?", "", show)   # drop year (± parens)
+    residue = re.sub(r"[^0-9A-Za-z]", "", residue)         # drop spaces/punctuation
+    return bool(residue)
+
+
 def _title_hint_from_remainder(remainder: str) -> str:
     """Recover a human episode title from the text after the episode marker,
     dropping quality/release noise. Returns '' when nothing meaningful remains."""
@@ -473,16 +489,39 @@ class CleanService(BaseCleanService):
 
     def _parse_detail(self, path: Path) -> ParsedEpisode | None:
         """Parse (with title hint + seasonless flag) from filename, then parent,
-        then a Subs/ grandparent — mirroring the base resolution order."""
+        then a Subs/ grandparent — mirroring the base resolution order.
+
+        Special case: when the filename parses to a valid season/episode but an
+        empty / year-only show name (the file STARTS with SxxExx and the show
+        name lives in the parent folder, e.g. parent "Bull - S01 E01-23 (2017)"
+        with files "S01E08 ...mkv"), keep the filename's per-file episode
+        numbering but borrow the show NAME from the parent. Falling back to the
+        parent parse wholesale would be wrong — the parent's own SxxExx range
+        yields E01 for every file and collapses them. And never accept a
+        year-only name: better to skip (log unparsed) than create a "(2016)"
+        show folder.
+        """
         from ..config import SUBS_FOLDER_NAMES
-        for candidate in (path.name, path.parent.name):
-            d = parse_episode_detail(candidate)
-            if d:
-                return d
+
+        file_detail = parse_episode_detail(path.name)
+        if file_detail and _has_real_show_text(file_detail.show):
+            return file_detail
+
+        parent_detail = parse_episode_detail(path.parent.name)
+        if file_detail is not None:
+            # Filename had episode numbering but no real name — take the name
+            # from the parent if it has one; otherwise skip rather than mis-file.
+            if parent_detail and _has_real_show_text(parent_detail.show):
+                return file_detail._replace(show=parent_detail.show)
+            return None
+
+        # Filename didn't parse at all — fall back to parent, then Subs grandparent.
+        if parent_detail and _has_real_show_text(parent_detail.show):
+            return parent_detail
         if path.parent.name.lower() in SUBS_FOLDER_NAMES and len(path.parents) >= 2:
-            d = parse_episode_detail(path.parents[1].name)
-            if d:
-                return d
+            gp = parse_episode_detail(path.parents[1].name)
+            if gp and _has_real_show_text(gp.show):
+                return gp
         return None
 
     def _remap_episode_via_tvmaze(

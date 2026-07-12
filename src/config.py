@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 
@@ -104,6 +105,36 @@ def parse_duration(text: str) -> float:
     value = float(m.group(1))
     unit = m.group(2).lower() or "s"
     return value * _DURATION_UNITS[unit]
+
+
+# ============================================================================
+# qBittorrent integration
+# ============================================================================
+# Before renaming a downloaded file, CleanMedia asks qBittorrent who owns it:
+#   * a COMPLETED torrent  -> remove it from the client (data kept) so the move
+#     doesn't yank a seeded file out from under qBittorrent, then rename;
+#   * an INCOMPLETE torrent -> flag the file as a "possible zombie", leave it;
+#   * no torrent            -> rename as normal.
+# See src/qbittorrent.py. All settings are env-overridable. Defaults assume the
+# Web UI on localhost:8080 with "Bypass authentication for clients on localhost"
+# enabled (no credentials needed).
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Read a boolean-ish env var. Unset -> default; "0"/"false"/"no"/"off"/""
+    -> False; anything else -> True."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+QBIT_ENABLED = _env_flag("QBIT_ENABLED", True)
+QBIT_HOST = os.environ.get("QBIT_HOST", "localhost")
+QBIT_PORT = int(os.environ.get("QBIT_PORT", "8080"))
+QBIT_USER = os.environ.get("QBIT_USER") or None
+QBIT_PASS = os.environ.get("QBIT_PASS") or None
+QBIT_TIMEOUT = float(os.environ.get("QBIT_TIMEOUT", "5"))
 
 
 # ============================================================================
