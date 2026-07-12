@@ -151,46 +151,52 @@ def set_track_defaults(
         # Find which English track should be default (prefer first one)
         target_audio = english_audio[0]
         target_audio_id = target_audio["id"]
-        
-        for track in audio_tracks:
+
+        # mkvpropedit selects tracks with 1-based, TYPE-RELATIVE selectors
+        # (track:a1 = first audio track). It must NOT be track:@<id> — "@N" means
+        # "the track whose UID equals N", and mkvmerge's positional "id" (0,1,2…)
+        # never matches a real track UID, so the edit silently no-ops while
+        # mkvpropedit still exits 0. enumerate() gives the audio-relative index.
+        for pos, track in enumerate(audio_tracks, start=1):
             track_id = track["id"]
             props = track.get("properties", {})
             is_default = props.get("default_track", False)
-            
+            selector = f"track:a{pos}"
+
             if track_id == target_audio_id:
                 # This should be default
                 if not is_default:
-                    commands.extend(["--edit", f"track:@{track_id}", "--set", "flag-default=1"])
+                    commands.extend(["--edit", selector, "--set", "flag-default=1"])
                     changes_needed = True
-                    logger.info("SET DEFAULT AUDIO: track %d (%s)", track_id, props.get("language", "und"))
+                    logger.info("SET DEFAULT AUDIO: track a%d (%s)", pos, props.get("language", "und"))
             else:
                 # This should not be default
                 if is_default:
-                    commands.extend(["--edit", f"track:@{track_id}", "--set", "flag-default=0"])
+                    commands.extend(["--edit", selector, "--set", "flag-default=0"])
                     changes_needed = True
-                    logger.info("UNSET DEFAULT AUDIO: track %d (%s)", track_id, props.get("language", "?"))
+                    logger.info("UNSET DEFAULT AUDIO: track a%d (%s)", pos, props.get("language", "?"))
     
-    # Handle subtitle tracks
-    for track in subtitle_tracks:
-        track_id = track["id"]
+    # Handle subtitle tracks (type-relative selector track:sN, same reason as audio)
+    for pos, track in enumerate(subtitle_tracks, start=1):
         props = track.get("properties", {})
         is_default = props.get("default_track", False)
         is_forced = is_forced_subtitle(track)
         track_name = props.get("track_name", "")
         lang = props.get("language", "und")
-        
+        selector = f"track:s{pos}"
+
         if is_forced and is_english_track(track):
             # Forced English subtitles should be enabled (but not default)
             if is_default:
                 # Keep enabled but not default - actually forced should stay default
                 # Per user request: forced subs for foreign dialogue should be on
-                logger.info("KEEP FORCED SUBTITLE: track %d (%s) %s", track_id, lang, track_name)
+                logger.info("KEEP FORCED SUBTITLE: track s%d (%s) %s", pos, lang, track_name)
         else:
             # Non-forced subtitles should be disabled
             if is_default:
-                commands.extend(["--edit", f"track:@{track_id}", "--set", "flag-default=0"])
+                commands.extend(["--edit", selector, "--set", "flag-default=0"])
                 changes_needed = True
-                logger.info("DISABLE SUBTITLE: track %d (%s) %s", track_id, lang, track_name)
+                logger.info("DISABLE SUBTITLE: track s%d (%s) %s", pos, lang, track_name)
     
     if not changes_needed:
         logger.debug("TRACKS OK: %s", path.name)
