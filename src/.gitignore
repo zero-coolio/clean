@@ -1,3 +1,4 @@
 .tvmaze_cache.json
 .tvmaze_id_cache.json
 .tmdb_cache.json
+.imdb_cache.json
