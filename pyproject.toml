@@ -26,6 +26,11 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Video",
 ]
+# Core runtime dependency: deletes are sent to the system Trash (recoverable),
+# never hard-unlinked. Without this, safe_delete falls back to permanent
+# deletion — the exact failure that lost movies. Keep installed in whatever
+# python the launchd watchers run (currently /opt/homebrew/bin/python3).
+dependencies = ["send2trash>=1.8"]
 
 [project.optional-dependencies]
 tmdb = ["requests>=2.25.0"]

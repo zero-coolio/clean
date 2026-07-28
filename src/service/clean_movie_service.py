@@ -392,7 +392,7 @@ class CleanMovieService(BaseCleanService):
 
         if parsed:
             title, year = parsed
-            title, year = self._tvmaze_verify(title, year)
+            title, year = self._imdb_verify(title, year)
             return title, year
 
         # If TMDB lookup is enabled and this is a video file, try API
@@ -403,20 +403,22 @@ class CleanMovieService(BaseCleanService):
 
         return None
 
-    def _tvmaze_verify(self, title: str, year: str) -> tuple[str, str]:
-        """Best-effort canonicalization of movie title via TVMaze. Returns original on failure."""
+    def _imdb_verify(self, title: str, year: str) -> tuple[str, str]:
+        """Canonicalize a movie title/year via IMDb (movies only, strict gate).
+
+        Returns the IMDb ``(title, year)`` only on a confident exact-title,
+        year-matched movie hit; otherwise returns the ORIGINAL name unchanged.
+        Never matches a TV series, so a movie can't be renamed onto the wrong
+        title (the failure that lost files under the old TVMaze verify).
+        """
         try:
-            from ..tvmaze import lookup_show
-            query = f"{title} ({year})" if year else title
-            result = lookup_show(query, logger=self._logger)
+            from ..imdb import resolve_movie
+            result = resolve_movie(title, year or None, logger=self._logger)
             if result:
                 canonical, found_year = result
-                fy = found_year or year
-                if canonical.lower() != title.lower() or fy != year:
-                    self._logger.info("TVMaze verify: '%s (%s)' → '%s (%s)'", title, year, canonical, fy)
-                return canonical, fy
+                return canonical, (found_year or year)
         except Exception as e:
-            self._logger.debug("TVMaze verify failed for '%s': %s", title, e)
+            self._logger.debug("IMDb verify failed for '%s': %s", title, e)
         return title, year
     
     def run(
