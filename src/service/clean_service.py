@@ -149,6 +149,22 @@ def _clean_show_name(raw_show: str, remainder: str) -> str:
     return show
 
 
+# Structural/placeholder words that are text but are NOT a show name. A file
+# named "Episode 06 - Cajun Spice.avi" parses via RE_BARE_EPISODE to
+# show="Episode", episode="06" — real text, but it names nothing; the actual
+# show lives only in the parent folder. Unguarded, that searched TVMaze for
+# "Episode", took the top hit, and filed X-Men Evolution under "Itazura na Kiss
+# - Love in Tokyo (2013)" (2026-08-19). Compared against the year-stripped,
+# alphanumeric-only residue, so only a WHOLE name that is one of these is
+# rejected — "Episode Three" or "The Chapter" still parse normally.
+# Singular/abbreviated forms only: "Episodes" (2011) is a real series.
+_PLACEHOLDER_SHOW_NAMES = frozenset({
+    "episode", "ep", "season", "series", "part", "pt", "chapter",
+    "disc", "disk", "cd", "dvd", "volume", "vol", "track",
+    "video", "movie", "file", "title", "untitled", "newfolder",
+})
+
+
 def _has_real_show_text(show: str) -> bool:
     """True when `show` has actual title text beyond a year and punctuation.
 
@@ -157,12 +173,18 @@ def _has_real_show_text(show: str) -> bool:
     real show name lives only in the parent folder. A show whose entire name is
     just a 19xx/20xx year is treated as "no real name" (vanishingly rare for TV,
     and the caller falls back to the parent folder rather than mis-filing).
+
+    Also rejects a name that is nothing but a structural placeholder word (see
+    `_PLACEHOLDER_SHOW_NAMES`) — same reasoning: better to fall back to the
+    parent folder than to hand a meaningless query to TVMaze.
     """
     if not show:
         return False
     residue = re.sub(r"\(?(?:19|20)\d{2}\)?", "", show)   # drop year (± parens)
     residue = re.sub(r"[^0-9A-Za-z]", "", residue)         # drop spaces/punctuation
-    return bool(residue)
+    if not residue:
+        return False
+    return residue.lower() not in _PLACEHOLDER_SHOW_NAMES
 
 
 def _title_hint_from_remainder(remainder: str) -> str:

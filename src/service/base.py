@@ -22,6 +22,7 @@ from ..utils import (
     safe_delete,
     safe_move,
     undo_from_journal,
+    unique_path,
 )
 
 
@@ -391,42 +392,28 @@ class BaseCleanService(ABC):
                 safe_delete(path, commit, journal, self._logger)
                 return
             
-            # Handle destination conflict — keep the NEWER file (by mtime).
-            # When mtimes are identical, fall back to keeping the larger file
-            # (the old heuristic) as a tiebreak.
+            # Destination conflict with DIFFERENT content (the same_content
+            # branch above already handled byte-identical duplicates). Keep
+            # both: park the source alongside the incumbent under an "(alt)"
+            # name and let a human decide.
+            #
+            # This used to delete one of the two on an mtime/size heuristic,
+            # which silently assumed "same destination => same episode, just a
+            # different rip". That assumption fails catastrophically whenever
+            # show/episode resolution is wrong: on 2026-08-19 a placeholder
+            # show-name parse mapped four seasons of X-Men Evolution onto one
+            # nine-episode destination range and this branch trashed 27
+            # distinct episodes as "conflicts". `same_content` documents that
+            # the delete path must never yield a false positive — this branch
+            # bypassed that guarantee entirely, so it no longer deletes.
             if dest.exists():
-                src_stat = path.stat()
-                dst_stat = dest.stat()
-                src_mtime, dst_mtime = src_stat.st_mtime, dst_stat.st_mtime
-                if src_mtime > dst_mtime:
-                    self._logger.warning(
-                        "CONFLICT: source newer (mtime %.0f > %.0f), replacing dest: %s",
-                        src_mtime, dst_mtime, dest,
-                    )
-                    safe_delete(dest, commit, journal, self._logger)
-                elif src_mtime < dst_mtime:
-                    self._logger.warning(
-                        "CONFLICT: dest newer (mtime %.0f > %.0f), keeping dest, deleting source: %s",
-                        dst_mtime, src_mtime, path,
-                    )
-                    safe_delete(path, commit, journal, self._logger)
-                    return
-                else:
-                    # Same mtime — tiebreak on size, keep the larger file.
-                    src_size, dst_size = src_stat.st_size, dst_stat.st_size
-                    if src_size > dst_size:
-                        self._logger.warning(
-                            "CONFLICT: same mtime, source larger (%d > %d bytes), replacing dest: %s",
-                            src_size, dst_size, dest,
-                        )
-                        safe_delete(dest, commit, journal, self._logger)
-                    else:
-                        self._logger.warning(
-                            "CONFLICT: same mtime, dest larger or equal (%d >= %d bytes), keeping dest, deleting source: %s",
-                            dst_size, src_size, path,
-                        )
-                        safe_delete(path, commit, journal, self._logger)
-                        return
+                alt = unique_path(dest)
+                self._logger.warning(
+                    "CONFLICT: %s already exists with different content — "
+                    "keeping both, filing source as %s",
+                    dest, alt.name,
+                )
+                dest = alt
 
             # qBittorrent: remove a completed torrent (keeping its data) before
             # we move its file; skip files owned by an incomplete torrent
