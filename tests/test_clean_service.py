@@ -9,6 +9,7 @@ from src.service.clean_service import (
     CleanService,
     parse_episode_from_string,
     episode_title_suffix,
+    _has_real_show_text,
 )
 from src.utils import is_english_subtitle, touch_folder, safe_move
 
@@ -235,8 +236,49 @@ class TestCleanServiceIntegration:
         assert (root / "Show" / "Season 01" / "Show.S01E01.mkv").exists()
 
 
+class TestPlaceholderShowName:
+    """A show name that is only a structural word is not a real show name.
+
+    Regression for 2026-08-19: files named "Episode 06 - Cajun Spice.avi"
+    parse via the bare-episode rule to show="Episode", which is real text but
+    names nothing — the show lives in the parent folder. That query went to
+    TVMaze, matched "Itazura na Kiss - Love in Tokyo (2013)", and four seasons
+    of X-Men Evolution were filed under it.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        ["Episode", "episode", "Season", "Part", "Disc", "Vol", "CD", "Untitled"],
+    )
+    def test_placeholder_rejected(self, name: str) -> None:
+        assert not _has_real_show_text(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["Episodes", "Episode Three", "The Chapter", "Studio 60", "Letterkenny (2016)"],
+    )
+    def test_real_names_accepted(self, name: str) -> None:
+        assert _has_real_show_text(name)
+
+    def test_year_only_still_rejected(self) -> None:
+        assert not _has_real_show_text("(2016)")
+
+    def test_bare_episode_file_yields_placeholder_show(self) -> None:
+        """The parse itself still fires — it's the show name that must be refused."""
+        show, season, episode = parse_episode_from_string("Episode 06 - Cajun Spice.avi")
+        assert (show, season, episode) == ("Episode", "01", "06")
+        assert not _has_real_show_text(show)
+
+
 class TestCollisionResolution:
-    """When two different episode files map to the same destination, keep newer."""
+    """Two different files mapping to one destination: keep BOTH, never delete.
+
+    The old policy picked a winner by mtime (size as tiebreak) and trashed the
+    loser. That silently assumed a collision meant "same episode, different
+    rip" — false whenever show/episode resolution goes wrong, and on
+    2026-08-19 it destroyed 27 distinct X-Men Evolution episodes that a bad
+    show-name parse had funnelled into one nine-episode range.
+    """
 
     @staticmethod
     def _no_tvmaze(monkeypatch) -> None:
@@ -247,8 +289,8 @@ class TestCollisionResolution:
             lambda name, season, episode, logger=None: None,
         )
 
-    def test_newer_source_replaces_older_dest(self, tmp_path: Path, monkeypatch) -> None:
-        """A colliding source that is newer than the dest wins."""
+    def test_newer_source_parked_as_alt(self, tmp_path: Path, monkeypatch) -> None:
+        """A newer colliding source is filed as (alt); the incumbent survives."""
         self._no_tvmaze(monkeypatch)
         root = tmp_path / "intake"
         root.mkdir()
@@ -268,11 +310,13 @@ class TestCollisionResolution:
 
         CleanService().run(root=root, commit=True, quarantine=None)
 
+        alt = dest.with_name(f"{dest.stem} (alt){dest.suffix}")
         assert not src.exists()
-        assert dest.read_text(encoding="utf-8") == "NEWER-CONTENT"
+        assert dest.read_text(encoding="utf-8") == "OLD"
+        assert alt.read_text(encoding="utf-8") == "NEWER-CONTENT"
 
-    def test_older_source_keeps_newer_dest(self, tmp_path: Path, monkeypatch) -> None:
-        """A colliding source that is older than the dest is discarded."""
+    def test_older_source_parked_as_alt(self, tmp_path: Path, monkeypatch) -> None:
+        """An older colliding source is filed as (alt) too — nothing is discarded."""
         self._no_tvmaze(monkeypatch)
         root = tmp_path / "intake"
         root.mkdir()
@@ -292,8 +336,10 @@ class TestCollisionResolution:
 
         CleanService().run(root=root, commit=True, quarantine=None)
 
+        alt = dest.with_name(f"{dest.stem} (alt){dest.suffix}")
         assert not src.exists()
         assert dest.read_text(encoding="utf-8") == "NEWER-DEST"
+        assert alt.read_text(encoding="utf-8") == "OLD"
 
 
 class TestEpisodeTitleSuffix:
