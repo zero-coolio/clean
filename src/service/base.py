@@ -26,6 +26,25 @@ from ..utils import (
 )
 
 
+# An "(alt)" / "(alt 2)" parking slot written by the dest-conflict branch below.
+_RE_ALT_SUFFIX = re.compile(r"^(?P<stem>.*?) \(alt(?: \d+)?\)$")
+
+
+def _is_alt_variant(path: Path, dest: Path) -> bool:
+    """True when `path` is already the parked "(alt)" companion of `dest`.
+
+    Such a file re-parses to the same show/season/episode as `dest` on every
+    subsequent run, so without this check the conflict branch renames it to the
+    next free slot each pass — "(alt)" -> "(alt 2)" -> "(alt)" forever, and
+    every rename wakes the fswatch watcher. It is already correctly placed;
+    leave it alone.
+    """
+    if path.parent != dest.parent or path.suffix != dest.suffix:
+        return False
+    m = _RE_ALT_SUFFIX.match(path.stem)
+    return bool(m) and m.group("stem") == dest.stem
+
+
 class BaseCleanService(ABC):
     """Abstract base class for media cleaning services.
     
@@ -407,6 +426,11 @@ class BaseCleanService(ABC):
             # the delete path must never yield a false positive — this branch
             # bypassed that guarantee entirely, so it no longer deletes.
             if dest.exists():
+                if _is_alt_variant(path, dest):
+                    self._logger.info(
+                        "OK (already parked alongside %s): %s", dest.name, path
+                    )
+                    return
                 alt = unique_path(dest)
                 self._logger.warning(
                     "CONFLICT: %s already exists with different content — "
