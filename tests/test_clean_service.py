@@ -342,6 +342,30 @@ class TestCollisionResolution:
         assert alt.read_text(encoding="utf-8") == "OLD"
 
 
+    def test_existing_alt_is_left_alone(self, tmp_path: Path, monkeypatch) -> None:
+        """An already-parked (alt) file is idempotent — no endless renaming.
+
+        Regression: the conflict branch used to re-file it as "(alt 2)", which
+        freed "(alt)" for the next run to rename it straight back, ping-ponging
+        forever and waking the fswatch watcher on every pass.
+        """
+        self._no_tvmaze(monkeypatch)
+        root = tmp_path / "intake"
+        root.mkdir()
+
+        dest = CleanService.build_dest(root, "Show", "01", "01", ".mkv")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("PRIMARY", encoding="utf-8")
+        alt = dest.with_name(f"{dest.stem} (alt){dest.suffix}")
+        alt.write_text("PARKED-ALREADY", encoding="utf-8")
+
+        CleanService().run(root=root, commit=True, quarantine=None)
+
+        assert dest.read_text(encoding="utf-8") == "PRIMARY"
+        assert alt.read_text(encoding="utf-8") == "PARKED-ALREADY"
+        assert not dest.with_name(f"{dest.stem} (alt 2){dest.suffix}").exists()
+
+
 class TestEpisodeTitleSuffix:
     """Tests for formatting an episode title into a filename segment."""
 
