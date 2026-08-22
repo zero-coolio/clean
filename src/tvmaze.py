@@ -18,7 +18,13 @@ import re
 import time
 import urllib.parse
 import urllib.request
+import datetime
 from pathlib import Path
+
+from .tvmaze_freshness import is_plausible_replacement, needs_refresh
+# Re-exported under the old private name: this module's filename path is the
+# long-standing caller, and tests reference tvmaze._real_title.
+from .tvmaze_titles import real_title as _real_title
 
 # Module logger for cache/network diagnostics. These code paths run deep inside
 # a clean and historically swallowed every error silently; logging at DEBUG
@@ -93,6 +99,13 @@ _ID_CACHE_PATH = _CACHE_PATH.parent / ".tvmaze_id_cache.json"
 # Shared episode cache, loaded lazily from _SHARED_CACHE_PATH:
 #   normalized_show_key → {"episodes": [...], "fetchedAt": "..."}
 _episodes_cache: dict[str, dict] | None = None
+
+# Show keys already re-fetched in THIS process. `_ensure_show_episodes` runs
+# once per media FILE, not once per show, so without this a 30-file season pack
+# for a stale show would fire 30 identical network fetches — and a show that is
+# genuinely finished still looks stale after its refresh (no forward data, aired
+# recently), so it would never self-clear. One refresh attempt per show per run.
+_refreshed_keys: set[str] = set()
 
 # Separator/punctuation normalization, ported verbatim from lime's
 # LibraryScanner.normalizeSeparators so both projects compute identical keys.
@@ -451,24 +464,52 @@ def _fetch_all_episodes(show_id: int) -> list[dict]:
     return episodes
 
 
-def _ensure_show_episodes(name: str, logger=None) -> list[dict] | None:
-    """Return a show's episode list, from the shared cache or a fresh fetch.
+def _fetch_and_store_episodes(
+    name: str, key: str, logger=None, replaces: list[dict] | None = None
+) -> list[dict] | None:
+    """Resolve a show, fetch its full episode list, and store it under `key`.
 
-    On a cache miss, resolves the show id, fetches the full episode list, and
-    writes it into the shared cache under the normalized name key (lime schema).
-    Returns None if the show can't be resolved.
+    Shared by both write paths — the cold-cache miss and the staleness refresh —
+    so the schema written to the shared cache (and the year-stamped key it is
+    written under) can only ever be produced in one place.
+
+    Args:
+        name: Show name to resolve on TVMaze.
+        key: Normalized cache key to store under (see `_normalize_show_key`).
+        logger: Optional logger.
+        replaces: The episodes already cached under `key`, when this is a
+            refresh. Passed so the result can be sanity-checked against them
+            before it overwrites a good entry (`is_plausible_replacement`).
+
+    Returns:
+        The fetched episodes, or None if the show could not be resolved, the
+        fetch came back empty, or the result did not look like the same show. An
+        empty result is a FAILURE and is never written: TVMaze being unreachable
+        must not blank out a good cached entry. A merely *smaller* result is
+        written normally — TVMaze does revise episode counts downward (Avatar
+        16 → 15), and that is a correction, not a fault.
     """
-    key = _normalize_show_key(name)
-    cache = _load_episodes_cache()
-    entry = cache.get(key)
-    if entry is not None:
-        return entry.get("episodes", [])
-
     show_id = _resolve_show_id(name, logger=logger)
     if not show_id:
+        _log.debug("TVMaze: could not resolve show id for %r", name)
         return None
 
     episodes = _fetch_all_episodes(show_id)
+    if not episodes:
+        _log.debug(
+            "TVMaze: empty episode fetch for %r (id %s) — leaving cache untouched",
+            name, show_id,
+        )
+        return None
+
+    if not is_plausible_replacement(replaces, episodes):
+        _log.warning(
+            "TVMaze: refresh of %r resolved to show id %s but its episodes do not "
+            "match the cached ones — keeping the cached entry",
+            key, show_id,
+        )
+        return None
+
     fetched_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     _save_episodes_cache({key: {"episodes": episodes, "fetchedAt": fetched_at}})
     if logger:
@@ -476,25 +517,43 @@ def _ensure_show_episodes(name: str, logger=None) -> list[dict] | None:
     return episodes
 
 
-# TVMaze placeholder titles for episodes that exist but have no announced
-# title yet (unaired / not-yet-titled). These must never be baked into a
-# filename as if they were a real episode title — see _real_title.
-_PLACEHOLDER_TITLES = {"tba", "tbd", "to be announced", "to be determined"}
+def _ensure_show_episodes(name: str, logger=None) -> list[dict] | None:
+    """Return a show's episode list, from the shared cache or a fresh fetch.
 
+    On a cache miss, resolves the show id, fetches the full episode list, and
+    writes it into the shared cache under the normalized name key (lime schema).
 
-def _real_title(title: str | None) -> str | None:
-    """Return a genuine episode title, or None for empty/placeholder values.
+    On a cache HIT the entry is checked for staleness (`needs_refresh`): a show
+    with no forward data whose newest episode aired recently may have continued
+    since we last looked, and serving that entry unchanged is how the shared
+    cache went stale enough to break lime (Reacher stuck at 3 seasons while
+    season 4 aired). Refreshed at most once per show per process, and a failed
+    refresh falls back to the cached episodes rather than losing them.
 
-    TVMaze lists unannounced episodes with a placeholder like "TBA". Treating
-    that as a real title bakes a fake name into the filename (e.g.
-    ``House.of.the.Dragon.(2022).S03E02.TBA.avi``), so placeholders collapse to
-    None and no title suffix is appended.
+    Returns None if the show can't be resolved.
     """
-    if not title:
-        return None
-    if title.strip().lower() in _PLACEHOLDER_TITLES:
-        return None
-    return title
+    key = _normalize_show_key(name)
+    cache = _load_episodes_cache()
+    entry = cache.get(key)
+    if entry is not None:
+        cached = entry.get("episodes", [])
+        if key in _refreshed_keys:
+            return cached
+        if not needs_refresh(cached, entry.get("fetchedAt"), datetime.date.today()):
+            return cached
+        _refreshed_keys.add(key)
+        _log.debug("TVMaze: cached entry for %r looks stale, re-fetching", key)
+        refreshed = _fetch_and_store_episodes(name, key, logger=logger, replaces=cached)
+        if refreshed is None:
+            return cached
+        if logger and len(refreshed) != len(cached):
+            logger.info(
+                "TVMaze refresh: '%s' %d → %d episodes", name, len(cached), len(refreshed)
+            )
+        return refreshed
+
+    _refreshed_keys.add(key)
+    return _fetch_and_store_episodes(name, key, logger=logger)
 
 
 def lookup_episode_name(
