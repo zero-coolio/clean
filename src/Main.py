@@ -35,6 +35,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=f"Incremental mode shorthand for --since {DEFAULT_RECENT_WINDOW}.",
     )
+    ap.add_argument(
+        "--structural",
+        action="store_true",
+        help=(
+            "Select work by library STRUCTURE instead of file mtime: process "
+            "anything not yet filed under a 'Show (Year)' folder, plus anything "
+            "inside one whose name clean did not produce. Unlike --since this "
+            "cannot silently miss a download (torrents arrive from a temp dir "
+            "with stale mtimes), and a dropped watcher event costs latency, not "
+            "the file. Overrides --since/--recent."
+        ),
+    )
     return ap.parse_args()
 
 
@@ -64,6 +76,7 @@ def main() -> None:
         plan=args.plan,
         quarantine=quarantine,
         since_seconds=since_seconds,
+        structural=args.structural,
     )
 
 
