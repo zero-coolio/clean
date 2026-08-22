@@ -12,6 +12,7 @@ from logging import Logger
 from pathlib import Path
 
 from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES
+from ..intake_filter import needs_processing
 from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
 from ..qbittorrent import QbitReaper
 from ..utils import (
@@ -543,6 +544,7 @@ class BaseCleanService(ABC):
         quarantine: Path | None = None,
         dest: Path | None = None,
         since_seconds: float | None = None,
+        structural: bool = False,
     ) -> None:
         """Run the cleaning process.
 
@@ -573,7 +575,8 @@ class BaseCleanService(ABC):
         self._logger.info(
             "START: %s (commit=%s, plan=%s, quarantine=%s, dest=%s, since=%s)",
             root, commit, plan, quarantine, dest or "(same as root)",
-            f"{since_seconds:.0f}s (mtime >= {cutoff:.0f})" if cutoff is not None else "(full)",
+            "structural" if structural
+            else (f"{since_seconds:.0f}s (mtime >= {cutoff:.0f})" if cutoff is not None else "(full)"),
         )
 
         # qBittorrent remove-before-rename: build the reaper once per run (one
@@ -597,13 +600,24 @@ class BaseCleanService(ABC):
         for path in files:
             if not path.is_file():
                 continue
-            if not self._is_recent(path, cutoff):
+            if structural:
+                # Structural mode ignores mtime entirely and asks whether the
+                # path's SHAPE says there is work left. See intake_filter.
+                if not needs_processing(path.relative_to(root)):
+                    skipped_old += 1
+                    continue
+            elif not self._is_recent(path, cutoff):
                 skipped_old += 1
                 continue
             considered += 1
             self.process_file(path, root, commit, journal, quarantine, unexpected, dest)
 
-        if cutoff is not None:
+        if structural:
+            self._logger.info(
+                "STRUCTURAL: processed %d unfinished file(s), skipped %d already placed",
+                considered, skipped_old,
+            )
+        elif cutoff is not None:
             self._logger.info(
                 "INCREMENTAL: processed %d recent file(s), skipped %d outside window",
                 considered, skipped_old,
@@ -612,7 +626,7 @@ class BaseCleanService(ABC):
         # Set audio/subtitle track defaults for MKV files (gated to recent files
         # in incremental mode — running mkvmerge over the whole library is the
         # dominant per-run cost this mode exists to avoid).
-        self._process_audio_tracks(root, commit, cutoff)
+        self._process_audio_tracks(root, commit, cutoff, structural=structural)
         
         # Cleanup
         cleanup_empty_dirs(root, commit, self._logger)
@@ -637,7 +651,10 @@ class BaseCleanService(ABC):
         
         self._logger.info("END")
     
-    def _process_audio_tracks(self, root: Path, commit: bool, cutoff: float | None = None) -> None:
+    def _process_audio_tracks(
+        self, root: Path, commit: bool, cutoff: float | None = None,
+        structural: bool = False,
+    ) -> None:
         """Set English audio as default and disable non-forced subtitles.
 
         No-op unless `config.AUDIO_TRACKS_ENABLED` is set. It is OFF by default
@@ -653,6 +670,9 @@ class BaseCleanService(ABC):
             cutoff: Optional mtime threshold; when set, only MKVs modified at or
                 after it are inspected (incremental mode). Older files were
                 already normalized on a previous run.
+            structural: Select files by path shape instead of mtime, matching
+                whatever run() used, so the two passes never disagree about
+                which files are unfinished.
         """
         # Imported inside the function (same pattern as _make_qbit_reaper) so the
         # flag is read at call time — that is what lets tests and ad-hoc runs flip
@@ -679,7 +699,10 @@ class BaseCleanService(ABC):
         for path in root.rglob("*.mkv"):
             if not path.is_file():
                 continue
-            if not self._is_recent(path, cutoff):
+            if structural:
+                if not needs_processing(path.relative_to(root)):
+                    continue
+            elif not self._is_recent(path, cutoff):
                 continue
 
             processed += 1
