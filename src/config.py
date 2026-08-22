@@ -129,6 +129,17 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off", "")
 
 
+# Audio/subtitle track-default pass (BaseCleanService._process_audio_tracks).
+# DISABLED by default as of 2026-08-22: Plex now picks the English audio track
+# itself, so the audio half is redundant, and the subtitle half was not working
+# in practice. The code is kept, not deleted — flip this back on with
+# AUDIO_TRACKS_ENABLED=1 if Plex's behaviour changes or the subtitle logic is
+# fixed. Disabling also removes the pass's cost, which is the dominant per-run
+# cost of a clean: it spawns `mkvmerge -J` on EVERY in-window MKV just to read
+# track metadata, whether or not anything needs changing (the mkvpropedit writes
+# are idempotent and rare; the probes are neither).
+AUDIO_TRACKS_ENABLED = _env_flag("AUDIO_TRACKS_ENABLED", False)
+
 QBIT_ENABLED = _env_flag("QBIT_ENABLED", True)
 QBIT_HOST = os.environ.get("QBIT_HOST", "localhost")
 QBIT_PORT = int(os.environ.get("QBIT_PORT", "8080"))

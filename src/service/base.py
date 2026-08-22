@@ -640,6 +640,13 @@ class BaseCleanService(ABC):
     def _process_audio_tracks(self, root: Path, commit: bool, cutoff: float | None = None) -> None:
         """Set English audio as default and disable non-forced subtitles.
 
+        No-op unless `config.AUDIO_TRACKS_ENABLED` is set. It is OFF by default
+        as of 2026-08-22: Plex selects the English audio track itself, and the
+        subtitle half was not working in practice, so the pass was pure cost —
+        and it is the most expensive thing a run does, because it spawns
+        `mkvmerge -J` on every in-window MKV merely to READ track metadata,
+        whether or not any change is needed.
+
         Args:
             root: Root directory to scan.
             commit: If True, apply changes.
@@ -647,6 +654,17 @@ class BaseCleanService(ABC):
                 after it are inspected (incremental mode). Older files were
                 already normalized on a previous run.
         """
+        # Imported inside the function (same pattern as _make_qbit_reaper) so the
+        # flag is read at call time — that is what lets tests and ad-hoc runs flip
+        # it via monkeypatch/env without reimporting the module.
+        from ..config import AUDIO_TRACKS_ENABLED
+
+        if not AUDIO_TRACKS_ENABLED:
+            self._logger.info(
+                "Audio/subtitle track defaults DISABLED (set AUDIO_TRACKS_ENABLED=1 to re-enable)"
+            )
+            return
+
         if not check_mkvtoolnix_installed():
             self._logger.warning("mkvtoolnix not installed - skipping audio track defaults")
             self._logger.warning("Install with: brew install mkvtoolnix")
