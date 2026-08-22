@@ -17,6 +17,9 @@ def _isolate_shared_tvmaze_cache(tmp_path, monkeypatch):
     # The episode cache is memoized in memory; reset it so each test loads fresh
     # from its own temp path instead of reusing a prior test's in-memory copy.
     monkeypatch.setattr("src.tvmaze._episodes_cache", None, raising=False)
+    # The once-per-process refresh guard is also module state; a key another
+    # test already "refreshed" would silently suppress this test's re-fetch.
+    monkeypatch.setattr("src.tvmaze._refreshed_keys", set(), raising=False)
 
 
 @pytest.fixture(autouse=True)
