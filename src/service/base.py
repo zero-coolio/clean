@@ -23,27 +23,7 @@ from ..utils import (
     safe_delete,
     safe_move,
     undo_from_journal,
-    unique_path,
 )
-
-
-# An "(alt)" / "(alt 2)" parking slot written by the dest-conflict branch below.
-_RE_ALT_SUFFIX = re.compile(r"^(?P<stem>.*?) \(alt(?: \d+)?\)$")
-
-
-def _is_alt_variant(path: Path, dest: Path) -> bool:
-    """True when `path` is already the parked "(alt)" companion of `dest`.
-
-    Such a file re-parses to the same show/season/episode as `dest` on every
-    subsequent run, so without this check the conflict branch renames it to the
-    next free slot each pass — "(alt)" -> "(alt 2)" -> "(alt)" forever, and
-    every rename wakes the fswatch watcher. It is already correctly placed;
-    leave it alone.
-    """
-    if path.parent != dest.parent or path.suffix != dest.suffix:
-        return False
-    m = _RE_ALT_SUFFIX.match(path.stem)
-    return bool(m) and m.group("stem") == dest.stem
 
 
 class BaseCleanService(ABC):
@@ -413,32 +393,56 @@ class BaseCleanService(ABC):
                 return
             
             # Destination conflict with DIFFERENT content (the same_content
-            # branch above already handled byte-identical duplicates). Keep
-            # both: park the source alongside the incumbent under an "(alt)"
-            # name and let a human decide.
+            # branch above already handled byte-identical duplicates). Policy
+            # (Steve, 2026-09-16): the NEWER file wins; when mtimes tie, the
+            # larger one does. The loser is trashed, not unlinked, so a wrong
+            # call is recoverable from the system Trash.
             #
-            # This used to delete one of the two on an mtime/size heuristic,
-            # which silently assumed "same destination => same episode, just a
-            # different rip". That assumption fails catastrophically whenever
-            # show/episode resolution is wrong: on 2026-08-19 a placeholder
-            # show-name parse mapped four seasons of X-Men Evolution onto one
-            # nine-episode destination range and this branch trashed 27
-            # distinct episodes as "conflicts". `same_content` documents that
-            # the delete path must never yield a false positive — this branch
-            # bypassed that guarantee entirely, so it no longer deletes.
+            # Note what this trades away. "Same destination" does not imply
+            # "same episode" — it only implies the two resolved the same way.
+            # When show/episode resolution goes wrong, every mis-resolved file
+            # funnels into one destination range and this branch deletes the
+            # incumbent each time: on 2026-08-19 a placeholder show-name parse
+            # mapped four seasons of X-Men Evolution onto nine destinations and
+            # 27 distinct episodes were trashed here. That root cause is fixed
+            # (`_PLACEHOLDER_SHOW_NAMES`), and Trash makes this recoverable,
+            # but this branch is still the blast-radius multiplier for any
+            # future resolution bug. Log loudly enough to notice.
             if dest.exists():
-                if _is_alt_variant(path, dest):
-                    self._logger.info(
-                        "OK (already parked alongside %s): %s", dest.name, path
+                src_stat = path.stat()
+                dst_stat = dest.stat()
+                src_mtime, dst_mtime = src_stat.st_mtime, dst_stat.st_mtime
+                src_size, dst_size = src_stat.st_size, dst_stat.st_size
+                if src_mtime > dst_mtime:
+                    self._logger.warning(
+                        "CONFLICT: source newer (mtime %.0f > %.0f; %d vs %d bytes), "
+                        "trashing dest and replacing: %s",
+                        src_mtime, dst_mtime, src_size, dst_size, dest,
                     )
+                    safe_delete(dest, commit, journal, self._logger)
+                elif src_mtime < dst_mtime:
+                    self._logger.warning(
+                        "CONFLICT: dest newer (mtime %.0f > %.0f; %d vs %d bytes), "
+                        "keeping dest, trashing source: %s",
+                        dst_mtime, src_mtime, dst_size, src_size, path,
+                    )
+                    safe_delete(path, commit, journal, self._logger)
                     return
-                alt = unique_path(dest)
-                self._logger.warning(
-                    "CONFLICT: %s already exists with different content — "
-                    "keeping both, filing source as %s",
-                    dest, alt.name,
-                )
-                dest = alt
+                elif src_size > dst_size:
+                    self._logger.warning(
+                        "CONFLICT: same mtime, source larger (%d > %d bytes), "
+                        "trashing dest and replacing: %s",
+                        src_size, dst_size, dest,
+                    )
+                    safe_delete(dest, commit, journal, self._logger)
+                else:
+                    self._logger.warning(
+                        "CONFLICT: same mtime, dest larger or equal (%d >= %d bytes), "
+                        "keeping dest, trashing source: %s",
+                        dst_size, src_size, path,
+                    )
+                    safe_delete(path, commit, journal, self._logger)
+                    return
 
             # qBittorrent: remove a completed torrent (keeping its data) before
             # we move its file; skip files owned by an incomplete torrent
