@@ -14,7 +14,9 @@ from pathlib import Path
 from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES
 from ..intake_filter import needs_processing
 from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
+from ..conflict_policy import Candidate, choose_winner
 from ..qbittorrent import QbitReaper
+from ..video_probe import video_height
 from ..utils import (
     cleanup_empty_dirs,
     is_english_subtitle,
@@ -393,53 +395,39 @@ class BaseCleanService(ABC):
                 return
             
             # Destination conflict with DIFFERENT content (the same_content
-            # branch above already handled byte-identical duplicates). Policy
-            # (Steve, 2026-09-16): the NEWER file wins; when mtimes tie, the
-            # larger one does. The loser is trashed, not unlinked, so a wrong
-            # call is recoverable from the system Trash.
+            # branch above already handled byte-identical duplicates). The
+            # survivor is chosen by `conflict_policy.choose_winner`: higher
+            # resolution first, then newer, then larger. The loser is trashed,
+            # not unlinked, so a wrong call is recoverable from the Trash.
             #
-            # Note what this trades away. "Same destination" does not imply
-            # "same episode" — it only implies the two resolved the same way.
-            # When show/episode resolution goes wrong, every mis-resolved file
+            # Note what this branch is. "Same destination" does not imply "same
+            # episode" — only that the two resolved the same way. When
+            # show/episode resolution goes wrong, every mis-resolved file
             # funnels into one destination range and this branch deletes the
             # incumbent each time: on 2026-08-19 a placeholder show-name parse
             # mapped four seasons of X-Men Evolution onto nine destinations and
-            # 27 distinct episodes were trashed here. That root cause is fixed
-            # (`_PLACEHOLDER_SHOW_NAMES`), and Trash makes this recoverable,
-            # but this branch is still the blast-radius multiplier for any
-            # future resolution bug. Log loudly enough to notice.
+            # 27 distinct episodes died here. Root causes are guarded elsewhere
+            # (`_PLACEHOLDER_SHOW_NAMES`, `_canonical_show`), but this stays the
+            # blast-radius multiplier for any future resolution bug. Log loudly.
             if dest.exists():
                 src_stat = path.stat()
                 dst_stat = dest.stat()
-                src_mtime, dst_mtime = src_stat.st_mtime, dst_stat.st_mtime
-                src_size, dst_size = src_stat.st_size, dst_stat.st_size
-                if src_mtime > dst_mtime:
+                decision = choose_winner(
+                    Candidate(video_height(path, self._logger),
+                              src_stat.st_mtime, src_stat.st_size),
+                    Candidate(video_height(dest, self._logger),
+                              dst_stat.st_mtime, dst_stat.st_size),
+                )
+                if decision.winner == "source":
                     self._logger.warning(
-                        "CONFLICT: source newer (mtime %.0f > %.0f; %d vs %d bytes), "
-                        "trashing dest and replacing: %s",
-                        src_mtime, dst_mtime, src_size, dst_size, dest,
-                    )
-                    safe_delete(dest, commit, journal, self._logger)
-                elif src_mtime < dst_mtime:
-                    self._logger.warning(
-                        "CONFLICT: dest newer (mtime %.0f > %.0f; %d vs %d bytes), "
-                        "keeping dest, trashing source: %s",
-                        dst_mtime, src_mtime, dst_size, src_size, path,
-                    )
-                    safe_delete(path, commit, journal, self._logger)
-                    return
-                elif src_size > dst_size:
-                    self._logger.warning(
-                        "CONFLICT: same mtime, source larger (%d > %d bytes), "
-                        "trashing dest and replacing: %s",
-                        src_size, dst_size, dest,
+                        "CONFLICT: %s — trashing dest and replacing (%d vs %d bytes): %s",
+                        decision.reason, src_stat.st_size, dst_stat.st_size, dest,
                     )
                     safe_delete(dest, commit, journal, self._logger)
                 else:
                     self._logger.warning(
-                        "CONFLICT: same mtime, dest larger or equal (%d >= %d bytes), "
-                        "keeping dest, trashing source: %s",
-                        dst_size, src_size, path,
+                        "CONFLICT: %s — keeping dest, trashing source (%d vs %d bytes): %s",
+                        decision.reason, dst_stat.st_size, src_stat.st_size, path,
                     )
                     safe_delete(path, commit, journal, self._logger)
                     return
