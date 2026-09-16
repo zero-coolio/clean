@@ -619,13 +619,25 @@ class CleanService(BaseCleanService):
     def _canonical_show(self, show: str, season: str, episode: str) -> str:
         """Return the canonical show name, consistent across all episodes in this run.
 
-        The bare show name (without year) is used as the key so that files
-        parsed with and without a year all resolve to the same canonical string.
-        """
-        bare = re.sub(r"\s*\((?:19|20)\d{2}\)\s*$", "", show).strip().lower()
+        Keyed by the show string AS PARSED, year included. Two different shows
+        can share a name and differ only by year — "Dark Matter (2015)" (TVMaze
+        id 1819) and "Dark Matter (2024)" (id 61315) are unrelated series. This
+        used to key on the year-STRIPPED name, so both collapsed onto "dark
+        matter": whichever resolved first in a run won, and every later file
+        inherited it regardless of its own year. A file deliberately renamed to
+        `Dark.Matter.(2015).S02E04.mkv` was filed into `Dark Matter (2024)/`,
+        where it then collided with the real 2024 S02E04.
 
-        if bare in self._show_canonical:
-            return self._show_canonical[bare]
+        Files parsed WITHOUT a year still unify with their year-qualified
+        siblings, just one step later: the lookup below resolves the bare name
+        to a TVMaze id, and `_id_canonical` collapses it onto whatever spelling
+        already owns that id. That path is keyed by show id, which is the only
+        identifier that actually distinguishes two same-named shows.
+        """
+        key = show.strip().lower()
+
+        if key in self._show_canonical:
+            return self._show_canonical[key]
 
         # TVMaze lookup, keyed by show id so name-variants collapse.
         try:
@@ -648,12 +660,12 @@ class CleanService(BaseCleanService):
                         self._id_canonical[sid] = verified
                 if verified.lower() != show.lower():
                     self._logger.info("TVMaze verify: '%s' → '%s'", show, verified)
-                self._show_canonical[bare] = verified
+                self._show_canonical[key] = verified
                 return verified
         except Exception as e:
             self._logger.debug("TVMaze verify failed for '%s': %s", show, e)
 
-        self._show_canonical[bare] = show
+        self._show_canonical[key] = show
         return show
 
     def _resolve_show_with_year(self, show: str, root: Path) -> str:

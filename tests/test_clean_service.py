@@ -270,6 +270,62 @@ class TestPlaceholderShowName:
         assert not _has_real_show_text(show)
 
 
+class TestSameNameDifferentShows:
+    """Two shows sharing a name and differing only by year stay separate.
+
+    Regression for 2026-09-16: `_canonical_show` keyed its per-run cache on the
+    year-STRIPPED name, so "Dark Matter (2015)" (TVMaze id 1819) and "Dark
+    Matter (2024)" (id 61315) both keyed "dark matter". Whichever resolved
+    first won, and a file deliberately renamed to Dark.Matter.(2015).S02E04
+    was filed under `Dark Matter (2024)/`, where it collided with the real 2024
+    S02E04 and was queued for deletion.
+    """
+
+    SHOWS = {
+        "dark matter (2015)": (("Dark Matter", "2015"), 1819),
+        "dark matter (2024)": (("Dark Matter", "2024"), 61315),
+        "dark matter": (("Dark Matter", "2024"), 61315),
+    }
+
+    @pytest.fixture(autouse=True)
+    def _fake_tvmaze(self, monkeypatch):
+        monkeypatch.setattr(
+            "src.tvmaze.lookup_show",
+            lambda name, logger=None: self.SHOWS.get(name.strip().lower(), (None, None))[0],
+        )
+        monkeypatch.setattr(
+            "src.tvmaze.resolve_show_id",
+            lambda name, logger=None: self.SHOWS.get(name.strip().lower(), (None, None))[1],
+        )
+
+    def test_years_are_not_collapsed(self) -> None:
+        svc = CleanService()
+        # 2024 resolves first, exactly as the failing run saw them.
+        assert svc._canonical_show("Dark Matter (2024)", "02", "04") == "Dark Matter (2024)"
+        assert svc._canonical_show("Dark Matter (2015)", "02", "04") == "Dark Matter (2015)"
+
+    def test_order_independent(self) -> None:
+        svc = CleanService()
+        assert svc._canonical_show("Dark Matter (2015)", "02", "04") == "Dark Matter (2015)"
+        assert svc._canonical_show("Dark Matter (2024)", "02", "04") == "Dark Matter (2024)"
+
+    def test_yearless_name_still_unifies_via_show_id(self) -> None:
+        """The behaviour the year-stripped key existed to provide must survive."""
+        svc = CleanService()
+        assert svc._canonical_show("Dark Matter (2024)", "02", "04") == "Dark Matter (2024)"
+        assert svc._canonical_show("Dark Matter", "02", "04") == "Dark Matter (2024)"
+
+    def test_the_two_shows_get_different_destinations(self, tmp_path: Path) -> None:
+        svc = CleanService()
+        a = svc.build_dest(tmp_path, svc._canonical_show("Dark Matter (2024)", "02", "04"),
+                           "02", "04", ".mkv")
+        b = svc.build_dest(tmp_path, svc._canonical_show("Dark Matter (2015)", "02", "04"),
+                           "02", "04", ".mkv")
+        assert a != b
+        assert a.parent.parent.name == "Dark Matter (2024)"
+        assert b.parent.parent.name == "Dark Matter (2015)"
+
+
 class TestCollisionResolution:
     """Two different files mapping to one destination: keep BOTH, never delete.
 
