@@ -271,13 +271,13 @@ class TestPlaceholderShowName:
 
 
 class TestCollisionResolution:
-    """Two different files mapping to one destination: keep BOTH, never delete.
+    """Two different files mapping to one destination: the NEWER one wins.
 
-    The old policy picked a winner by mtime (size as tiebreak) and trashed the
-    loser. That silently assumed a collision meant "same episode, different
-    rip" — false whenever show/episode resolution goes wrong, and on
-    2026-08-19 it destroyed 27 distinct X-Men Evolution episodes that a bad
-    show-name parse had funnelled into one nine-episode range.
+    Policy set by Steve on 2026-09-16. The loser is trashed rather than
+    unlinked, so a wrong call stays recoverable. This branch is the
+    blast-radius multiplier for any show/episode resolution bug (see
+    `_PLACEHOLDER_SHOW_NAMES` and the 2026-08-19 X-Men Evolution incident),
+    which is why its root cause is guarded separately.
     """
 
     @staticmethod
@@ -289,8 +289,8 @@ class TestCollisionResolution:
             lambda name, season, episode, logger=None: None,
         )
 
-    def test_newer_source_parked_as_alt(self, tmp_path: Path, monkeypatch) -> None:
-        """A newer colliding source is filed as (alt); the incumbent survives."""
+    def test_newer_source_replaces_older_dest(self, tmp_path: Path, monkeypatch) -> None:
+        """A colliding source that is newer than the dest wins."""
         self._no_tvmaze(monkeypatch)
         root = tmp_path / "intake"
         root.mkdir()
@@ -310,13 +310,12 @@ class TestCollisionResolution:
 
         CleanService().run(root=root, commit=True, quarantine=None)
 
-        alt = dest.with_name(f"{dest.stem} (alt){dest.suffix}")
         assert not src.exists()
-        assert dest.read_text(encoding="utf-8") == "OLD"
-        assert alt.read_text(encoding="utf-8") == "NEWER-CONTENT"
+        assert dest.read_text(encoding="utf-8") == "NEWER-CONTENT"
+        assert not dest.with_name(f"{dest.stem} (alt){dest.suffix}").exists()
 
-    def test_older_source_parked_as_alt(self, tmp_path: Path, monkeypatch) -> None:
-        """An older colliding source is filed as (alt) too — nothing is discarded."""
+    def test_older_source_discarded_for_newer_dest(self, tmp_path: Path, monkeypatch) -> None:
+        """A colliding source that is older than the dest is discarded."""
         self._no_tvmaze(monkeypatch)
         root = tmp_path / "intake"
         root.mkdir()
@@ -336,18 +335,19 @@ class TestCollisionResolution:
 
         CleanService().run(root=root, commit=True, quarantine=None)
 
-        alt = dest.with_name(f"{dest.stem} (alt){dest.suffix}")
         assert not src.exists()
         assert dest.read_text(encoding="utf-8") == "NEWER-DEST"
-        assert alt.read_text(encoding="utf-8") == "OLD"
+        assert not dest.with_name(f"{dest.stem} (alt){dest.suffix}").exists()
 
 
-    def test_existing_alt_is_left_alone(self, tmp_path: Path, monkeypatch) -> None:
-        """An already-parked (alt) file is idempotent — no endless renaming.
+    def test_existing_alt_file_is_resolved_by_the_same_rule(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A leftover "(alt)" file from the old keep-both policy is not special.
 
-        Regression: the conflict branch used to re-file it as "(alt 2)", which
-        freed "(alt)" for the next run to rename it straight back, ping-ponging
-        forever and waking the fswatch watcher on every pass.
+        It re-parses to the same season/episode as its incumbent, so the newer
+        of the two wins and the other is trashed — which is how the three
+        Neagley (alt) pairs on disk get collapsed.
         """
         self._no_tvmaze(monkeypatch)
         root = tmp_path / "intake"
@@ -355,15 +355,17 @@ class TestCollisionResolution:
 
         dest = CleanService.build_dest(root, "Show", "01", "01", ".mkv")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text("PRIMARY", encoding="utf-8")
+        dest.write_text("INCUMBENT", encoding="utf-8")
+        old_time = time.time() - 10_000
+        os.utime(dest, (old_time, old_time))
+
         alt = dest.with_name(f"{dest.stem} (alt){dest.suffix}")
-        alt.write_text("PARKED-ALREADY", encoding="utf-8")
+        alt.write_text("NEWER-ALT", encoding="utf-8")
 
         CleanService().run(root=root, commit=True, quarantine=None)
 
-        assert dest.read_text(encoding="utf-8") == "PRIMARY"
-        assert alt.read_text(encoding="utf-8") == "PARKED-ALREADY"
-        assert not dest.with_name(f"{dest.stem} (alt 2){dest.suffix}").exists()
+        assert dest.read_text(encoding="utf-8") == "NEWER-ALT"
+        assert not alt.exists()
 
 
 class TestEpisodeTitleSuffix:

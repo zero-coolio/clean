@@ -258,13 +258,18 @@ def safe_move(
             Set to 0 to disable.
 
     Raises:
-        FileExistsError: If destination already exists.
+        FileExistsError: If destination already exists (commit runs only).
     """
+    if not commit:
+        # Dry run. A conflict-resolution delete of `dst` was only logged, not
+        # performed, so `dst` is still on disk and the guard below would fire
+        # on a move that is perfectly valid for the real run. Checking it here
+        # aborted whole previews at the first replace-conflict. The guard
+        # protects actual moves, so it belongs after this return.
+        return
+
     if dst.exists():
         raise FileExistsError(f"Destination exists: {dst}")
-
-    if not commit:
-        return
 
     dst.parent.mkdir(parents=True, exist_ok=True)
 
