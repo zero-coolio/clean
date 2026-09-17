@@ -197,13 +197,13 @@ class TestCleanServiceIntegration:
         root = tmp_path / "intake"
         root.mkdir()
 
-        wrapper = root / "Show.S01E01.720p.WEB"
+        wrapper = root / "Fringe.S01E01.720p.WEB"
         wrapper.mkdir()
 
         sample = wrapper / "sample-show.s01e01.mkv"
         sample.write_text("SAMPLE", encoding="utf-8")
 
-        video = wrapper / "Show.S01E01.mkv"
+        video = wrapper / "Fringe.S01E01.mkv"
         video.write_text("VIDEO", encoding="utf-8")
 
         service = CleanService()
@@ -217,14 +217,14 @@ class TestCleanServiceIntegration:
         root.mkdir()
         quarantine = tmp_path / "quarantine"
 
-        wrapper = root / "Show.S01E01.720p.WEB"
+        wrapper = root / "Fringe.S01E01.720p.WEB"
         wrapper.mkdir()
 
         sample = wrapper / "sample-show.mkv"
         sample.write_text("SAMPLE", encoding="utf-8")
         
         # Add a real episode file so the root doesn't get deleted
-        video = wrapper / "Show.S01E01.720p.WEB.mkv"
+        video = wrapper / "Fringe.S01E01.720p.WEB.mkv"
         video.write_text("VIDEO", encoding="utf-8")
 
         service = CleanService()
@@ -233,7 +233,7 @@ class TestCleanServiceIntegration:
         assert not sample.exists()
         assert (quarantine / "sample-show.mkv").exists()
         # Video should be moved to clean structure
-        assert (root / "Show" / "Season 01" / "Show.S01E01.mkv").exists()
+        assert (root / "Fringe" / "Season 01" / "Fringe.S01E01.mkv").exists()
 
 
 class TestPlaceholderShowName:
@@ -248,7 +248,8 @@ class TestPlaceholderShowName:
 
     @pytest.mark.parametrize(
         "name",
-        ["Episode", "episode", "Season", "Part", "Disc", "Vol", "CD", "Untitled"],
+        ["Episode", "episode", "Season", "Part", "Disc", "Vol", "CD", "Untitled",
+         "Show", "show", "SHOW"],
     )
     def test_placeholder_rejected(self, name: str) -> None:
         assert not _has_real_show_text(name)
@@ -256,10 +257,11 @@ class TestPlaceholderShowName:
     @pytest.mark.parametrize(
         "name",
         ["Episodes", "Episode Three", "The Chapter", "Studio 60", "Letterkenny (2016)",
-         "The Tonight Show", "Regular Show", "The Show Must Go On"],
+         # "show" as a WHOLE name is a placeholder; as a word inside one it is
+         # ordinary. The residue comparison is what keeps these apart, and these
+         # are the cases that would break if it ever became a substring test.
+         "The Tonight Show", "Regular Show", "The Show Must Go On", "Show Name"],
     )
-    # "Show" itself is accepted, not rejected. See the note on
-    # _PLACEHOLDER_SHOW_NAMES for why that is a deliberate open question.
     def test_real_names_accepted(self, name: str) -> None:
         assert _has_real_show_text(name)
 
@@ -271,6 +273,29 @@ class TestPlaceholderShowName:
         show, season, episode = parse_episode_from_string("Episode 06 - Cajun Spice.avi")
         assert (show, season, episode) == ("Episode", "01", "06")
         assert not _has_real_show_text(show)
+
+    def test_a_placeholder_release_is_left_alone_and_reported(self, tmp_path) -> None:
+        """What rejecting a placeholder actually DOES, end to end.
+
+        The file is not filed at all: it stays where it is and its folder is
+        reported as unconsumed, for a human to name. That is the whole trade.
+        Filing it would mean filing it under a guess, and the guess is what
+        cost 27 episodes on 2026-08-19 ("Episode" matched "Itazura na Kiss").
+        With "show" added, a search for "Show" returns the real series "Regular
+        Show (2010)", which is the same trap wearing a different word.
+        """
+        root = tmp_path / "intake"
+        wrapper = root / "Show.S01E01.720p.WEB"
+        wrapper.mkdir(parents=True)
+        video = wrapper / "Show.S01E01.720p.WEB.mkv"
+        video.write_text("VIDEO", encoding="utf-8")
+
+        CleanService().run(root=root, commit=True, quarantine=None)
+
+        assert video.exists(), "a placeholder-named release must not be moved"
+        assert not (root / "Show").exists()
+        assert not (root / "Regular Show (2010)").exists(), \
+            "and must certainly not be filed under whatever the search returned"
 
 
 class TestSameNameDifferentShows:
@@ -354,16 +379,16 @@ class TestCollisionResolution:
         root.mkdir()
 
         # Pre-existing (older) destination
-        dest = CleanService.build_dest(root, "Show", "01", "01", ".mkv")
+        dest = CleanService.build_dest(root, "Fringe", "01", "01", ".mkv")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("OLD", encoding="utf-8")
         old_time = time.time() - 10_000
         os.utime(dest, (old_time, old_time))
 
         # Newer source with different content (different size -> not a dup)
-        wrapper = root / "Show.S01.1080p.WEB-GROUP"
+        wrapper = root / "Fringe.S01.1080p.WEB-GROUP"
         wrapper.mkdir()
-        src = wrapper / "Show.S01E01.1080p.WEB-GROUP.mkv"
+        src = wrapper / "Fringe.S01E01.1080p.WEB-GROUP.mkv"
         src.write_text("NEWER-CONTENT", encoding="utf-8")  # newer by default mtime
 
         CleanService().run(root=root, commit=True, quarantine=None)
@@ -379,14 +404,14 @@ class TestCollisionResolution:
         root.mkdir()
 
         # Pre-existing (newer) destination
-        dest = CleanService.build_dest(root, "Show", "01", "01", ".mkv")
+        dest = CleanService.build_dest(root, "Fringe", "01", "01", ".mkv")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("NEWER-DEST", encoding="utf-8")
 
         # Older source with different content
-        wrapper = root / "Show.S01.1080p.WEB-GROUP"
+        wrapper = root / "Fringe.S01.1080p.WEB-GROUP"
         wrapper.mkdir()
-        src = wrapper / "Show.S01E01.1080p.WEB-GROUP.mkv"
+        src = wrapper / "Fringe.S01E01.1080p.WEB-GROUP.mkv"
         src.write_text("OLD", encoding="utf-8")
         old_time = time.time() - 10_000
         os.utime(src, (old_time, old_time))
@@ -411,7 +436,7 @@ class TestCollisionResolution:
         root = tmp_path / "intake"
         root.mkdir()
 
-        dest = CleanService.build_dest(root, "Show", "01", "01", ".mkv")
+        dest = CleanService.build_dest(root, "Fringe", "01", "01", ".mkv")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("INCUMBENT", encoding="utf-8")
         old_time = time.time() - 10_000
@@ -465,14 +490,14 @@ class TestEpisodeTitleInDest:
         )
         root = tmp_path / "intake"
         root.mkdir()
-        wrapper = root / "Show.S01.1080p.WEB-GROUP"
+        wrapper = root / "Fringe.S01.1080p.WEB-GROUP"
         wrapper.mkdir()
-        src = wrapper / "Show.S01E01.1080p.WEB-GROUP.mkv"
+        src = wrapper / "Fringe.S01E01.1080p.WEB-GROUP.mkv"
         src.write_text("DATA", encoding="utf-8")
 
         CleanService().run(root=root, commit=True, quarantine=None)
 
-        expected = root / "Show" / "Season 01" / "Show.S01E01.The.Pilot.mkv"
+        expected = root / "Fringe" / "Season 01" / "Fringe.S01E01.The.Pilot.mkv"
         assert expected.exists()
         assert not src.exists()
 

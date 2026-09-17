@@ -163,13 +163,14 @@ _PLACEHOLDER_SHOW_NAMES = frozenset({
     "episode", "ep", "season", "series", "part", "pt", "chapter",
     "disc", "disk", "cd", "dvd", "volume", "vol", "track",
     "video", "movie", "file", "title", "untitled", "newfolder",
+    # The most generic of the lot, and the same trap as "episode": a file named
+    # "Show.S01E01.720p.WEB.mkv" searched TVMaze for "Show" and got back the
+    # real series "Regular Show (2010)". Added 2026-09-17 on Steve's call. Safe
+    # against real titles for the same reason as the rest: the comparison is
+    # against the WHOLE residue, so "The Tonight Show" reduces to
+    # "thetonightshow" and is never caught.
+    "show",
 })
-# Deliberately NOT here: "show". It is the most generic word of the lot, and a
-# fixture named "Show.S01E01.720p.WEB" does resolve to the real series "Regular
-# Show (2010)". But rejecting it sends the caller to the parent folder instead,
-# which changes where a real release lands, and "Show" is a common enough stand
-# in that five existing tests encode the current behaviour. Left as a question
-# rather than a silent change. See CLEAN-4.
 
 
 def _has_real_show_text(show: str) -> bool:
