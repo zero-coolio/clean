@@ -12,6 +12,51 @@ from pathlib import Path
 from .config import NOISE_PREFIX_PATTERNS, SUBTITLE_EXT
 
 
+# A possessive or contraction suffix: the one or two letters after an
+# apostrophe, ending the word. Anchored on both sides, so a longer run after the
+# apostrophe (O'Brien, D'Artagnan) is not matched and keeps its capital.
+_RE_APOSTROPHE_SUFFIX = re.compile(r"(?<=[A-Za-z])'([A-Za-z]{1,2})\b")
+
+
+def title_case(text: str, *, preserve_short_acronyms: bool = False) -> str:
+    """Title-case `text` without capitalizing after an apostrophe.
+
+    str.title() treats every non-alpha character as a word break, so an
+    apostrophe starts a new "word" and the letter after it is capitalized:
+
+        eater's guide to the world  ->  Eater'S Guide To The World
+        don't look up               ->  Don'T Look Up
+        ocean's eleven              ->  Ocean'S Eleven
+
+    That reached the filesystem. A clean-movie run proposed the folder
+    "Eater'S Guide To The World (2020)".
+
+    Only a one or two letter run after the apostrophe is lowered, which covers
+    every English possessive and contraction ('s, 't, 'll, 're, 've, 'd, 'm).
+    Anything longer is part of the name, so O'Brien and D'Artagnan are left
+    alone rather than becoming O'brien and D'artagnan.
+
+    Args:
+        text: String to title-case. Whitespace is normalized to single spaces.
+        preserve_short_acronyms: Leave an all-caps word of four characters or
+            fewer exactly as it is, so "FBI" does not become "Fbi". Off by
+            default: it also leaves the short words of a shouty release name
+            untouched, which is a trade only the movie parser currently wants.
+
+    Returns:
+        The title-cased string.
+    """
+    words = []
+    for word in text.split():
+        if preserve_short_acronyms and word.isupper() and len(word) <= 4:
+            words.append(word)
+            continue
+        titled = word.title()
+        words.append(_RE_APOSTROPHE_SUFFIX.sub(
+            lambda m: "'" + m.group(1).lower(), titled))
+    return " ".join(words)
+
+
 def normalize_unicode_separators(s: str) -> str:
     """Normalize unicode dashes and whitespace.
     
