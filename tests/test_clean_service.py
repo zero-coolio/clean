@@ -327,13 +327,12 @@ class TestSameNameDifferentShows:
 
 
 class TestCollisionResolution:
-    """Two different files mapping to one destination: the NEWER one wins.
+    """Two different files mapping to one destination, judged by mtime.
 
-    Policy set by Steve on 2026-09-16. The loser is trashed rather than
-    unlinked, so a wrong call stays recoverable. This branch is the
-    blast-radius multiplier for any show/episode resolution bug (see
-    `_PLACEHOLDER_SHOW_NAMES` and the 2026-08-19 X-Men Evolution incident),
-    which is why its root cause is guarded separately.
+    These fixtures are text files with no probeable video stream, so they
+    exercise the unknown-resolution fallback: newer wins, larger breaks a tie.
+    The resolution-first half of the rule is covered in test_conflict_policy.py,
+    which tests `choose_winner` directly rather than building fake media.
     """
 
     @staticmethod

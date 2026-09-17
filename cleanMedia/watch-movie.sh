@@ -17,6 +17,17 @@
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# launchd does NOT read ~/.zprofile, ~/.zshrc or any login shell profile, so a
+# key exported there is invisible to this script when launchd starts it. That is
+# why TMDB lookup silently never ran under the watcher: TMDB_API_KEY was set in
+# ~/.zprofile and $TMDB_API_KEY was empty here, so --lookup was never passed.
+# Secrets live in this gitignored file, NOT in the .plist, which is tracked.
+ENV_FILE="${CLEAN_ENV_FILE:-$SCRIPT_DIR/.env}"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
+fi
 WATCH_DIR="${CLEAN_MOVIE_DIR:-/Volumes/Seagate/seagate-movie}"
 LOG_FILE="$SCRIPT_DIR/../logs/watch-movie.log"
 LOCK_FILE="$SCRIPT_DIR/../logs/.watch-movie.lock"
@@ -45,12 +56,22 @@ notify() {
 }
 
 run_clean() {
-    # Pass "--recent" for incremental mode (only files modified in the last
-    # hour). Event-triggered runs use this for speed; the startup / --once sweep
-    # omits it for a full pass over the library.
-    local since_flag=""
+    # Event-triggered runs are scoped with --structural so a single new arrival
+    # is organized in seconds instead of re-walking the whole library; the
+    # startup / --once sweep omits it for a full pass.
+    #
+    # --structural, NOT the --recent mtime window this used to pass. qBittorrent
+    # downloads into a temp dir and MOVES the finished file into the library, so
+    # it arrives carrying its temp-dir mtime. On 2026-09-15 The End of Oak
+    # Street was moved in at 19:20:31 with an mtime of 2026-09-14 20:21:40,
+    # woke this watcher, and was then dropped by its own 60m window for being
+    # 21 hours "old", logged as "processed 0 recent file(s), skipped 375
+    # outside window". Nothing revisits a miss, so it stayed unrenamed until
+    # 2026-09-17. Structural mode selects by library shape, so a slow download
+    # cannot be missed and a dropped fswatch event costs latency, not the file.
+    local select_flag=""
     if [ "$1" == "--recent" ]; then
-        since_flag="--recent"
+        select_flag="--structural"
     fi
 
     local now=$(date +%s)
@@ -113,7 +134,7 @@ run_clean() {
     export PYTHONPATH="$SCRIPT_DIR/.."
     
     # Build command with optional TMDB lookup
-    CMD="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --commit $since_flag"
+    CMD="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --commit $select_flag"
     if [ -n "$TMDB_API_KEY" ]; then
         CMD="$CMD --lookup"
     fi

@@ -23,6 +23,16 @@ from ..config import (
     get_logger,
 )
 from ..utils import normalize_unicode_separators, strip_noise_prefix
+from ..intake_filter import (
+    is_beyond_movie_layout,
+    is_season_dir,
+    movie_needs_processing,
+)
+from ..title_signal import (
+    RE_RELEASE_LANGUAGE_TAG,
+    describe_mismatch,
+    folder_may_name_file,
+)
 from .base import BaseCleanService
 
 
@@ -71,13 +81,31 @@ def clean_movie_title(raw_title: str) -> str:
     for marker in QUALITY_MARKERS:
         title = re.sub(rf"\b{marker}\b", "", title, flags=re.IGNORECASE)
     
-    # Remove release group patterns
-    title = re.sub(r"\s*-\s*[A-Za-z0-9]+$", "", title)
+    # Remove release group patterns. Upper case only: an any-case pattern
+    # treats a lowercase trailing word as a group tag and ate the "rabbit" off
+    # "the curse of the were-rabbit", which then queried TMDB as "The Curse Of
+    # The Were".
+    title = re.sub(r"\s*-\s*[A-Z0-9]{2,}$", "", title)
     title = re.sub(r"\s*\[[^\]]+\]$", "", title)
-    
+
+    # Remove language and packaging tags. Guarded: if a title is made only of
+    # words that look like tags, keep it rather than reducing it to nothing.
+    without_tags = RE_RELEASE_LANGUAGE_TAG.sub(" ", title)
+    if without_tags.strip():
+        title = without_tags
+
+        # Tidy a separator orphaned by that removal: "ITA-ENG" losing both
+        # halves leaves a bare "-", which queried TMDB as "The End Of Oak
+        # Street -". Keyed on DOUBLE whitespace, which only the substitution
+        # above produces; a title's own separator has single spaces. An
+        # any-spacing pattern here rewrote 10 correctly placed films, turning
+        # "Batman - The Animated Series (1992)" into "Batman The Animated
+        # Series (1992)" and dragging their sidecars along.
+        title = re.sub(r"\s{2,}-|-\s{2,}", " ", title)
+
     # Normalize whitespace
-    title = re.sub(r"\s+", " ", title).strip()
-    
+    title = re.sub(r"\s+", " ", title).strip(" -")
+
     # Title case (preserve short acronyms like FBI, CIA)
     words = title.split()
     result = []
@@ -235,7 +263,6 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
 # Movie Service
 # ============================================================================
 
-_RE_SEASON_FOLDER = re.compile(r"^Season\s+\d+$", re.IGNORECASE)
 
 # Matches TV episode markers (S01E01, 1x01) and season packs (standalone S01)
 _RE_TV_IN_NAME = re.compile(
@@ -249,6 +276,27 @@ class CleanMovieService(BaseCleanService):
 
     SERVICE_NAME = "clean-movie"
 
+    def _needs_processing(self, rel_path) -> bool:
+        """Structural work selection for the movie layout. See intake_filter."""
+        return movie_needs_processing(rel_path)
+
+    def _folder_fallback_allowed(self, path: Path, folder_name: str) -> bool:
+        """Refuse a folder title that contradicts the filename. See title_signal.
+
+        The movie parser only succeeds on a name containing a year, so every
+        yearless file reaches the folder fallback, including files that are
+        plainly some other film, parked in a folder by hand. Renaming those
+        destroys the one piece of evidence about what they actually are, so they
+        stay put and get reported instead.
+        """
+        if folder_may_name_file(path.stem, folder_name):
+            return True
+        self._logger.warning(
+            "REFUSE FOLDER TITLE: %s | filename disagrees with '%s' (%s)",
+            path, folder_name, describe_mismatch(path.stem, folder_name),
+        )
+        return False
+
     def __init__(self) -> None:
         super().__init__(get_logger("clean-movie"))
         self._use_tmdb_lookup = False
@@ -259,7 +307,17 @@ class CleanMovieService(BaseCleanService):
             rel = path.relative_to(root)
         except ValueError:
             rel = path
-        if any(_RE_SEASON_FOLDER.match(part) for part in rel.parts):
+        if any(is_season_dir(part) for part in rel.parts):
+            return
+
+        # Nested deeper than a movie can be: TV extras under Features/,
+        # Featurettes/Specials/, Comic Relief/. Guarded HERE, not only in the
+        # structural filter, because the watcher's startup sweep is a FULL pass
+        # that never consults that filter. See is_beyond_movie_layout.
+        if is_beyond_movie_layout(rel):
+            self._logger.info(
+                "SKIP (nested below the movie layout, not a movie): %s", path
+            )
             return
 
         # Warn and skip if filename or any ancestor folder looks like TV content
@@ -430,6 +488,7 @@ class CleanMovieService(BaseCleanService):
         lookup: bool = False,
         dest: Path | None = None,
         since_seconds: float | None = None,
+        structural: bool = False,
     ) -> None:
         """Run the movie cleaning process.
 
@@ -443,9 +502,21 @@ class CleanMovieService(BaseCleanService):
                   when scanning a shared download directory.
             since_seconds: Optional incremental window (seconds); only files
                   modified within it are processed. None processes everything.
+            structural: Select files by path shape instead of mtime. Overrides
+                  since_seconds. See _needs_processing / intake_filter.
         """
         self._use_tmdb_lookup = lookup
-        super().run(root, commit, plan, quarantine, dest, since_seconds)
+        # Keywords, not positionals: this override shadows a 7-argument base
+        # signature, and the two lists have already drifted once.
+        super().run(
+            root=root,
+            commit=commit,
+            plan=plan,
+            quarantine=quarantine,
+            dest=dest,
+            since_seconds=since_seconds,
+            structural=structural,
+        )
     
     # =========================================================================
     # Legacy compatibility methods

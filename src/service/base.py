@@ -12,9 +12,10 @@ from logging import Logger
 from pathlib import Path
 
 from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES
-from ..intake_filter import needs_processing
 from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
+from ..conflict_policy import Candidate, choose_winner
 from ..qbittorrent import QbitReaper
+from ..video_probe import video_height
 from ..utils import (
     cleanup_empty_dirs,
     is_english_subtitle,
@@ -196,6 +197,32 @@ class BaseCleanService(ABC):
             return path.stat().st_mtime >= cutoff
         except OSError:
             return True
+
+    def _needs_processing(self, rel_path) -> bool:
+        """Return True if the path's SHAPE says clean still has work to do.
+
+        The structural counterpart to `_is_recent`, and the reason structural
+        mode cannot silently drop a slow download the way the mtime window does.
+        Deliberately abstract: the answer depends on the library layout a
+        service produces, and guessing wrong is worse than not answering. The TV
+        tier-2 test keys on an SxxExx stem, so applying it to a movie library
+        would mark every movie as unfinished work on every run.
+
+        Args:
+            rel_path: Path RELATIVE to the library root (see intake_filter).
+
+        Returns:
+            True if the file should be handed to process_file.
+
+        Raises:
+            NotImplementedError: if this service has no structural mode. Only
+                reachable when a caller passes structural=True, so services that
+                never use it (e.g. transcode) are unaffected.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no structural intake filter; "
+            "run it with --since/--recent, or give it one in intake_filter."
+        )
 
     def _before_run(self, root: Path, commit: bool, journal: list[dict]) -> None:
         """Hook called before the main file walk. Override in subclasses for pre-processing."""
@@ -393,53 +420,39 @@ class BaseCleanService(ABC):
                 return
             
             # Destination conflict with DIFFERENT content (the same_content
-            # branch above already handled byte-identical duplicates). Policy
-            # (Steve, 2026-09-16): the NEWER file wins; when mtimes tie, the
-            # larger one does. The loser is trashed, not unlinked, so a wrong
-            # call is recoverable from the system Trash.
+            # branch above already handled byte-identical duplicates). The
+            # survivor is chosen by `conflict_policy.choose_winner`: higher
+            # resolution first, then newer, then larger. The loser is trashed,
+            # not unlinked, so a wrong call is recoverable from the Trash.
             #
-            # Note what this trades away. "Same destination" does not imply
-            # "same episode" — it only implies the two resolved the same way.
-            # When show/episode resolution goes wrong, every mis-resolved file
+            # Note what this branch is. "Same destination" does not imply "same
+            # episode" — only that the two resolved the same way. When
+            # show/episode resolution goes wrong, every mis-resolved file
             # funnels into one destination range and this branch deletes the
             # incumbent each time: on 2026-08-19 a placeholder show-name parse
             # mapped four seasons of X-Men Evolution onto nine destinations and
-            # 27 distinct episodes were trashed here. That root cause is fixed
-            # (`_PLACEHOLDER_SHOW_NAMES`), and Trash makes this recoverable,
-            # but this branch is still the blast-radius multiplier for any
-            # future resolution bug. Log loudly enough to notice.
+            # 27 distinct episodes died here. Root causes are guarded elsewhere
+            # (`_PLACEHOLDER_SHOW_NAMES`, `_canonical_show`), but this stays the
+            # blast-radius multiplier for any future resolution bug. Log loudly.
             if dest.exists():
                 src_stat = path.stat()
                 dst_stat = dest.stat()
-                src_mtime, dst_mtime = src_stat.st_mtime, dst_stat.st_mtime
-                src_size, dst_size = src_stat.st_size, dst_stat.st_size
-                if src_mtime > dst_mtime:
+                decision = choose_winner(
+                    Candidate(video_height(path, self._logger),
+                              src_stat.st_mtime, src_stat.st_size),
+                    Candidate(video_height(dest, self._logger),
+                              dst_stat.st_mtime, dst_stat.st_size),
+                )
+                if decision.winner == "source":
                     self._logger.warning(
-                        "CONFLICT: source newer (mtime %.0f > %.0f; %d vs %d bytes), "
-                        "trashing dest and replacing: %s",
-                        src_mtime, dst_mtime, src_size, dst_size, dest,
-                    )
-                    safe_delete(dest, commit, journal, self._logger)
-                elif src_mtime < dst_mtime:
-                    self._logger.warning(
-                        "CONFLICT: dest newer (mtime %.0f > %.0f; %d vs %d bytes), "
-                        "keeping dest, trashing source: %s",
-                        dst_mtime, src_mtime, dst_size, src_size, path,
-                    )
-                    safe_delete(path, commit, journal, self._logger)
-                    return
-                elif src_size > dst_size:
-                    self._logger.warning(
-                        "CONFLICT: same mtime, source larger (%d > %d bytes), "
-                        "trashing dest and replacing: %s",
-                        src_size, dst_size, dest,
+                        "CONFLICT: %s — trashing dest and replacing (%d vs %d bytes): %s",
+                        decision.reason, src_stat.st_size, dst_stat.st_size, dest,
                     )
                     safe_delete(dest, commit, journal, self._logger)
                 else:
                     self._logger.warning(
-                        "CONFLICT: same mtime, dest larger or equal (%d >= %d bytes), "
-                        "keeping dest, trashing source: %s",
-                        dst_size, src_size, path,
+                        "CONFLICT: %s — keeping dest, trashing source (%d vs %d bytes): %s",
+                        decision.reason, dst_stat.st_size, src_stat.st_size, path,
                     )
                     safe_delete(path, commit, journal, self._logger)
                     return
@@ -483,24 +496,43 @@ class BaseCleanService(ABC):
         """
         from ..config import SUBS_FOLDER_NAMES
         
-        # Try filename first
+        # Try the filename first. It is the stronger signal: it travels with the
+        # file, whereas a folder only records where someone last dropped it.
         parsed = self.parse_media_info(path.name)
         if parsed:
             return parsed
-        
-        # Try parent folder
+
+        # Fall back to the folder, but only where the filename has not already
+        # claimed to be something else. See _folder_fallback_allowed.
         parsed = self.parse_media_info(path.parent.name)
-        if parsed:
+        if parsed and self._folder_fallback_allowed(path, path.parent.name):
             return parsed
-        
+
         # Try grandparent for Subs/ folders
         in_subs_folder = path.parent.name.lower() in SUBS_FOLDER_NAMES
         if in_subs_folder and len(path.parents) >= 2:
-            parsed = self.parse_media_info(path.parents[1].name)
-            if parsed:
+            grandparent = path.parents[1].name
+            parsed = self.parse_media_info(grandparent)
+            if parsed and self._folder_fallback_allowed(path, grandparent):
                 return parsed
-        
+
         return None
+
+    def _folder_fallback_allowed(self, path: Path, folder_name: str) -> bool:
+        """May `folder_name` supply the title for `path`, the filename having failed?
+
+        Base allows it, preserving the behaviour every service had before this
+        hook existed. Override where a filename that disagrees with its folder
+        should be believed over it, rather than silently renamed to match.
+
+        Args:
+            path: The file being named.
+            folder_name: The ancestor folder that parsed successfully.
+
+        Returns:
+            True to accept the folder's title for this file.
+        """
+        return True
     
     def _is_in_release_context(self, path: Path) -> bool:
         """Check if a file is in a release folder context.
@@ -607,7 +639,7 @@ class BaseCleanService(ABC):
             if structural:
                 # Structural mode ignores mtime entirely and asks whether the
                 # path's SHAPE says there is work left. See intake_filter.
-                if not needs_processing(path.relative_to(root)):
+                if not self._needs_processing(path.relative_to(root)):
                     skipped_old += 1
                     continue
             elif not self._is_recent(path, cutoff):
@@ -704,7 +736,7 @@ class BaseCleanService(ABC):
             if not path.is_file():
                 continue
             if structural:
-                if not needs_processing(path.relative_to(root)):
+                if not self._needs_processing(path.relative_to(root)):
                     continue
             elif not self._is_recent(path, cutoff):
                 continue
