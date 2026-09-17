@@ -106,8 +106,7 @@ def clean_movie_title(raw_title: str) -> str:
     # Normalize whitespace
     title = re.sub(r"\s+", " ", title).strip(" -")
 
-    # Title case (preserve short acronyms like FBI, CIA)
-    return title_case(title, preserve_short_acronyms=True)
+    return title_case(title)
 
 
 def parse_movie_from_string(s: str) -> tuple[str, str] | None:

@@ -81,9 +81,11 @@ class TestTitleCase:
     def test_ordinary_titles_are_unchanged_in_behaviour(self, raw, expected):
         assert title_case(raw) == expected
 
-    def test_short_acronyms_only_when_asked(self):
+    def test_there_is_no_acronym_exception(self):
+        """Dropped deliberately. A length test cannot tell FBI from the THE in
+        a shouty release name, and got the second wrong far more often."""
         assert title_case("FBI movie") == "Fbi Movie"
-        assert title_case("FBI movie", preserve_short_acronyms=True) == "FBI Movie"
+        assert title_case("THE DARK KNIGHT") == "The Dark Knight"
 
     def test_whitespace_is_normalized(self):
         assert title_case("  the   dark  knight ") == "The Dark Knight"

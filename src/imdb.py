@@ -44,12 +44,24 @@ _MOVIE_TYPES = {"movie", "tvMovie", "video"}
 _RE_ARTICLE = re.compile(r"^(the|a|an)\s+")
 
 
-def _normalize(title: str) -> str:
-    """Lowercase, fold '&'->'and', drop punctuation, strip a leading article."""
+def _normalize_keep_article(title: str) -> str:
+    """Lowercase, fold '&'->'and', drop punctuation. Keeps a leading article."""
     t = title.lower().replace("&", " and ")
     t = re.sub(r"[^a-z0-9 ]", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return _RE_ARTICLE.sub("", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _normalize(title: str) -> str:
+    """Lowercase, fold '&'->'and', drop punctuation, strip a leading article.
+
+    Article-insensitive on purpose: a release named "Matrix.1999.mkv" should
+    still resolve to "The Matrix". But an article is not always noise, and two
+    real films can differ by one ("State of Grace" 1990 and "A State of Grace"
+    2000), so callers must not treat a match here as proof of identity on its
+    own. See resolve_movie, which demands an exact year when the articles
+    disagree.
+    """
+    return _RE_ARTICLE.sub("", _normalize_keep_article(title))
 
 
 def _load_cache() -> None:
@@ -112,9 +124,15 @@ def _movie_candidates(entries: list[dict]) -> list[tuple[str, str, str]]:
 def resolve_movie(title: str, year: str | None = None, logger=None):
     """Resolve a movie to its canonical IMDb ``(title, year)``, or None.
 
-    Strict: only an exact normalized-title movie match is accepted, and — when
-    a year is supplied — only if a candidate's year is within +/- 1. Returns
-    None (caller keeps the original name) on anything less certain.
+    Strict: only an exact normalized-title movie match is accepted, and when a
+    year is supplied, only if the candidate's year is close enough. Returns None
+    (caller keeps the original name) on anything less certain.
+
+    "Close enough" depends on the article. _normalize is article-insensitive so
+    a release named "Matrix.1999" finds "The Matrix", but an article can also be
+    the only thing separating two real films, so a candidate whose article
+    differs from the query must match the year EXACTLY. Same-title candidates
+    keep the +/- 1 window that absorbs festival-vs-release drift.
     """
     global _last_request, _cache_dirty
 
@@ -129,6 +147,7 @@ def resolve_movie(title: str, year: str | None = None, logger=None):
     _last_request = time.time()
 
     q_norm = _normalize(title)
+    q_full = _normalize_keep_article(title)
     exact = [c for c in _movie_candidates(entries) if c[0] == q_norm]
 
     chosen: tuple[str, str] | None = None
@@ -136,9 +155,23 @@ def resolve_movie(title: str, year: str | None = None, logger=None):
         if year:
             try:
                 target = int(year)
-                yclose = [c for c in exact if c[2] and abs(int(c[2]) - target) <= 1]
             except ValueError:
                 yclose = []
+            else:
+                # The +/- 1 window absorbs festival-vs-release year drift, but
+                # it may only do so for a candidate whose title matches article
+                # and all. _normalize is article-insensitive so that
+                # "Matrix.1999" finds "The Matrix", and that same leniency let
+                # "A State of Grace" (2000) answer a query for "State of Grace"
+                # (2001): two different films, one rename, exactly what this
+                # gate exists to prevent. When the articles disagree, the year
+                # must match exactly.
+                yclose = [
+                    c for c in exact
+                    if c[2] and abs(int(c[2]) - target) <= (
+                        1 if _normalize_keep_article(c[1]) == q_full else 0
+                    )
+                ]
             if yclose:
                 chosen = (yclose[0][1], yclose[0][2])
             # exact title but no year-close candidate → ambiguous (a different
