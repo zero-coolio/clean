@@ -26,7 +26,7 @@ SCOPE: two layouts, one per service, sharing the tiering and the artifact rules:
 
 Both answer the same three tiers:
   0. clean's own artifacts (journals, .DS_Store) — never work.
-  1. anything NOT inside an organized "Title (Year)" folder — a release folder
+  1. anything NOT inside an organized "Title (Year)" folder: a release folder
      or a loose file dropped at the top level. Always processed.
   2. inside an organized folder, a file whose name is not one clean placed.
      Always processed.
@@ -36,7 +36,7 @@ that handles episode-title backfill.
 The tier-2 test is the only part that differs, because the two services produce
 different names: TV emits a dotted stem with SxxExx, movies emit the folder name
 verbatim plus an optional dotted sidecar suffix. Use the entry point that
-matches the service — `tv_needs_processing` or `movie_needs_processing` — via
+matches the service (`tv_needs_processing` or `movie_needs_processing`) via
 BaseCleanService._needs_processing, never by guessing at the call site.
 """
 from __future__ import annotations
@@ -66,15 +66,15 @@ _RE_CANONICAL_STEM = re.compile(r"^.+\.\((?:19|20)\d{2}\)\.S\d{2,4}E\d{2}(?:\..*
 # Movies never live under one, and this is not cosmetic: the qBittorrent intake
 # directory doubles as the TV library, and watch-tv.sh runs the MOVIE pass over
 # it to route films out to seagate-movie. Without this test, every organized
-# episode there is "not inside a Title (Year) folder" and therefore movie work
-# — measured at 6,518 files per event-triggered run on 2026-09-17, against a
+# episode there is "not inside a Title (Year) folder" and therefore movie work,
+# measured at 6,518 files per event-triggered run on 2026-09-17, against a
 # handful under the old mtime window. The movie service's process_file returns
 # early on these anyway, so all this saves is the pointless call; avoiding that
 # call is the entire purpose of incremental selection.
 _RE_SEASON_DIR = re.compile(r"^Season\s+\d+$", re.IGNORECASE)
 
-# Clean's own droppings. Journals accumulate in the library root — 3,631 of them
-# in the TV library as of 2026-08-22, 209 in the movie library as of 2026-09-17 —
+# Clean's own droppings. Journals accumulate in the library root: 3,631 of them
+# in the TV library as of 2026-08-22, 209 in the movie library as of 2026-09-17,
 # and treating each as a candidate would mean thousands of pointless
 # process_file calls per run. fswatch already ignores these two.
 #
@@ -110,8 +110,8 @@ def is_placed_movie_file(folder: str, name: str) -> bool:
         Psychokinesis (2018)/Psychokinesis (2018).eng.sdh.hi.srt
 
     So "placed" means the folder name, optionally followed by a dotted suffix
-    chain. Testing the stem against a standalone regex instead — the way the TV
-    side does it — would re-flag every subtitle as unfinished work on every run,
+    chain. Testing the stem against a standalone regex instead, the way the TV
+    side does it, would re-flag every subtitle as unfinished work on every run,
     which is the Hornblower trap above wearing a different hat. Comparing
     against the parent folder also catches a genuinely misfiled movie, e.g.
     "Eater's Guide to the World (2020)/Dr Who Joy To The World.mkv".
@@ -143,7 +143,7 @@ def _tier_0_and_1(rel: PurePath) -> bool | None:
     if is_own_artifact(rel.name):
         return False
 
-    # Not inside an organized folder — a release folder, or a loose file at the
+    # Not inside an organized folder: a release folder, or a loose file at the
     # top level (a stalled download, a manual drop). Always work.
     if len(parts) == 1 or not is_organized_dir(parts[0]):
         return True

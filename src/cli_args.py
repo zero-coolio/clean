@@ -7,7 +7,7 @@ and translate those flags into what BaseCleanService.run expects.
 Main (TV) and MovieMain ask the identical question and previously answered it
 with identical copies of `--since`, `--recent` and `resolve_since_seconds`.
 `--structural` then landed on the TV side only, and the movie watcher kept the
-mtime window it was already known to be broken under — which is how
+mtime window it was already known to be broken under, which is how
 "The.End.of.Oak.Street...mkv" sat unrenamed in the movie library from
 2026-09-15 onward. Divergence between these two parsers has a body count, so
 they share the definition now; the only per-service variation is the folder

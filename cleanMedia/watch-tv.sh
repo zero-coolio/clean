@@ -52,7 +52,7 @@ run_clean() {
     # Pass "--recent" for an event-triggered (incremental) run rather than a
     # full pass, scoped so a single new download is organized in seconds instead
     # of re-walking the whole ~300-folder library. The startup / --once sweep
-    # passes no argument at all, giving a FULL pass — that is what catches
+    # passes no argument at all, giving a FULL pass. That is what catches
     # anything that arrived while the watcher was down, and it is also the pass
     # that backfills episode titles onto already-placed files.
     #
@@ -61,10 +61,10 @@ run_clean() {
     # arrive carrying their temp-dir mtimes: anything that took longer than the
     # window to download is already "too old" when it lands, and is skipped
     # forever. Twice observed:
-    #   TV,    2026-08-22 — Peacemaker S01-S02 arrived 17:49:37 and clean filed
+    #   TV,    2026-08-22: Peacemaker S01-S02 arrived 17:49:37 and clean filed
     #          10 of 16 episodes, silently dropping the 6 written to temp an
     #          hour earlier, leaving a partial library that looked successful.
-    #   Movie, 2026-09-15 — The End of Oak Street was MOVED in at 19:20:31 with
+    #   Movie, 2026-09-15: The End of Oak Street was MOVED in at 19:20:31 with
     #          a 21-hour-old mtime, woke the watcher, and was then skipped by
     #          the watcher's own window. It sat unrenamed until 2026-09-17.
     # --structural selects by library shape instead, so it cannot miss a

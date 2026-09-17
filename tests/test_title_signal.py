@@ -77,8 +77,8 @@ def test_folder_may_name_file_when_nothing_contradicts_it(stem, folder):
 
 def test_library_root_is_treated_like_any_other_disagreeing_folder():
     """A loose file at the library root compares against the root's own name and
-    is refused. Harmless — a root like "seagate-movie" has no year, so it never
-    parses as a movie and the fallback is never reached — but asserted so the
+    is refused. Harmless, since a root like "seagate-movie" has no year, so it never
+    parses as a movie and the fallback is never reached, but asserted so the
     behaviour is recorded rather than assumed."""
     assert folder_may_name_file("Dr Who Joy To The World", "seagate-movie") is False
 
@@ -114,7 +114,7 @@ def test_movie_service_allows_an_agreeing_folder():
 def test_tv_service_still_trusts_its_folders():
     """TV must NOT inherit this. An episode title legitimately shares nothing
     with the show name, so the comparison would reject correct fallbacks
-    wholesale — which is why the hook defaults to permissive and only the movie
+    wholesale, which is why the hook defaults to permissive and only the movie
     service overrides it."""
     svc = CleanService()
     p = Path("/lib/Reacher (2022)/Season 04/Reacher.S04E01.City.of.Brotherly.Love.mkv")

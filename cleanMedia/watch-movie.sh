@@ -54,7 +54,7 @@ run_clean() {
     # it arrives carrying its temp-dir mtime. On 2026-09-15 The End of Oak
     # Street was moved in at 19:20:31 with an mtime of 2026-09-14 20:21:40,
     # woke this watcher, and was then dropped by its own 60m window for being
-    # 21 hours "old" — logged as "processed 0 recent file(s), skipped 375
+    # 21 hours "old", logged as "processed 0 recent file(s), skipped 375
     # outside window". Nothing revisits a miss, so it stayed unrenamed until
     # 2026-09-17. Structural mode selects by library shape, so a slow download
     # cannot be missed and a dropped fswatch event costs latency, not the file.

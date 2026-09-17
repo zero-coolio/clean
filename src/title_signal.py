@@ -6,7 +6,7 @@ the folder is allowed to name this file. No filesystem, no clock, no network.
 
 The filename is the stronger signal. `_try_parse_media` already tries the
 filename before the folder, but the movie parser only succeeds when it finds a
-YEAR, and a yearless filename returns None — at which point the folder supplies
+YEAR, and a yearless filename returns None, at which point the folder supplies
 a title for a file that already told us it is something else. Two real cases in
 seagate-movie on 2026-09-17, both of which a full run would have renamed:
 
@@ -74,7 +74,7 @@ _RE_QUALITY = re.compile(
 )
 _RE_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 # A trailing release-group tag: "-RARBG", "-V3SP4EV3R", "-GROUP". Requires
-# upper case, because a lowercase trailing word is part of the title — an
+# upper case, because a lowercase trailing word is part of the title. An
 # any-case pattern ate the "rabbit" off "the curse of the were-rabbit".
 _RE_RELEASE_GROUP = re.compile(r"-[A-Z0-9]{2,}$")
 _RE_BRACKETED = re.compile(r"[\[(][^\])]*[\])]")

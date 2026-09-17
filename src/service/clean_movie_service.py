@@ -258,7 +258,7 @@ class CleanMovieService(BaseCleanService):
         """Refuse a folder title that contradicts the filename. See title_signal.
 
         The movie parser only succeeds on a name containing a year, so every
-        yearless file reaches the folder fallback — including files that are
+        yearless file reaches the folder fallback, including files that are
         plainly some other film, parked in a folder by hand. Renaming those
         destroys the one piece of evidence about what they actually are, so they
         stay put and get reported instead.
@@ -266,7 +266,7 @@ class CleanMovieService(BaseCleanService):
         if folder_may_name_file(path.stem, folder_name):
             return True
         self._logger.warning(
-            "REFUSE FOLDER TITLE: %s — filename disagrees with '%s' (%s)",
+            "REFUSE FOLDER TITLE: %s | filename disagrees with '%s' (%s)",
             path, folder_name, describe_mismatch(path.stem, folder_name),
         )
         return False

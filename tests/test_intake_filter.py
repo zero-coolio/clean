@@ -165,11 +165,11 @@ class TestStructuralRun:
 
         # Arrived from temp with stale mtimes — must STILL be processed.
         mk("Avenue 5 (2020) Season 2 S02 (1080p x265 Vyndros)/Avenue.5.S02E01.x.mkv", old)
-        # Already placed by clean — must be skipped.
+        # Already placed by clean: must be skipped.
         mk("Avenue 5 (2020)/Season 01/Avenue.5.(2020).S01E01.I.Was.Flying.mkv", old)
         # A stray in an organized folder — must be processed.
         mk("Scrubs (2001)/Season 05/Scrubs - S05E21 - My Fallen Idol.rmvb", old)
-        # clean's own journal — must never be work.
+        # clean's own journal: must never be work.
         mk(".clean-tv-journal-20260822-141520.jsonl", old)
         return root
 
@@ -246,7 +246,7 @@ def test_movie_placed_file_is_done(rel):
 def test_movie_sidecars_are_done_not_work(rel):
     """The subtitle trap: 60 sidecars sit beside placed movies in the real
     library. Flagging them would mean re-processing them on every single run,
-    forever — the same mistake the two-digit Hornblower season pattern made."""
+    forever, the same mistake the two-digit Hornblower season pattern made."""
     assert movie_needs_processing(rel) is False
 
 
@@ -321,13 +321,13 @@ class TestMovieStructuralRun:
 
         # Moved in from qBittorrent's temp dir wearing an old mtime.
         mk("The.End.of.Oak.Street.2160p.HDR.ITA-ENG.WEBRip.x265.mkv", old)
-        # Already placed by clean — must be skipped.
+        # Already placed by clean: must be skipped.
         mk("Ad Astra (2019)/Ad Astra (2019).mkv", old)
-        # Its sidecar — must also be skipped.
+        # Its sidecar: must also be skipped.
         mk("Ad Astra (2019)/Ad Astra (2019).eng.srt", old)
-        # Misfiled into someone else's folder — must be processed.
+        # Misfiled into someone else's folder: must be processed.
         mk("Ad Astra (2019)/Dr Who Joy To The World.mkv", old)
-        # clean's own journal — must never be work.
+        # clean's own journal: must never be work.
         mk(".clean-movie-journal-20260917-121924.jsonl", old)
         return root
 
