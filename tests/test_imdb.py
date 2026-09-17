@@ -93,3 +93,46 @@ def test_article_and_punctuation_folding(monkeypatch):
 def test_empty_results_returns_none(monkeypatch):
     monkeypatch.setattr(imdb, "_fetch", _mock([]))
     assert imdb.resolve_movie("Whatever", "2020") is None
+
+
+class TestArticleCollision:
+    """An article is not always noise. _normalize drops a leading article so
+    "Matrix.1999" finds "The Matrix", and that leniency plus the +/- 1 year
+    window let "A State of Grace" (2000) answer a query for "State of Grace"
+    (2001): two different films, one rename, exactly what this gate exists to
+    prevent. Only a stale cached None kept it from firing on the real library.
+    """
+
+    def _candidates(self, monkeypatch, entries):
+        import src.imdb as imdb
+        monkeypatch.setattr(imdb, "_fetch", lambda title: entries)
+        return imdb
+
+    STATE_OF_GRACE = [
+        {"l": "A State of Grace", "y": 2000, "qid": "movie", "id": "tt0001"},
+        {"l": "State of Grace", "y": 1990, "qid": "movie", "id": "tt0002"},
+    ]
+
+    def test_differing_article_needs_an_exact_year(self, monkeypatch):
+        imdb = self._candidates(monkeypatch, self.STATE_OF_GRACE)
+        assert imdb.resolve_movie("State Of Grace", "2001") is None
+
+    def test_matching_article_and_year_resolves(self, monkeypatch):
+        imdb = self._candidates(monkeypatch, self.STATE_OF_GRACE)
+        assert imdb.resolve_movie("State Of Grace", "1990") == ("State of Grace", "1990")
+
+    def test_differing_article_with_an_exact_year_still_resolves(self, monkeypatch):
+        """Why the article-stripping exists: a release named "Matrix.1999"."""
+        imdb = self._candidates(monkeypatch, [
+            {"l": "The Matrix", "y": 1999, "qid": "movie", "id": "tt0133093"},
+        ])
+        assert imdb.resolve_movie("Matrix", "1999") == ("The Matrix", "1999")
+
+    def test_same_title_keeps_the_year_window(self, monkeypatch):
+        """Festival-vs-release drift is still absorbed when the title matches
+        article and all: Kingsman was filed as 2015 and IMDb says 2014."""
+        imdb = self._candidates(monkeypatch, [
+            {"l": "Kingsman: The Secret Service", "y": 2014, "qid": "movie", "id": "tt2802144"},
+        ])
+        assert imdb.resolve_movie("Kingsman: The Secret Service", "2015") == \
+            ("Kingsman: The Secret Service", "2014")

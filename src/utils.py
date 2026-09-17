@@ -18,7 +18,7 @@ from .config import NOISE_PREFIX_PATTERNS, SUBTITLE_EXT
 _RE_APOSTROPHE_SUFFIX = re.compile(r"(?<=[A-Za-z])'([A-Za-z]{1,2})\b")
 
 
-def title_case(text: str, *, preserve_short_acronyms: bool = False) -> str:
+def title_case(text: str) -> str:
     """Title-case `text` without capitalizing after an apostrophe.
 
     str.title() treats every non-alpha character as a word break, so an
@@ -36,21 +36,24 @@ def title_case(text: str, *, preserve_short_acronyms: bool = False) -> str:
     Anything longer is part of the name, so O'Brien and D'Artagnan are left
     alone rather than becoming O'brien and D'artagnan.
 
+    There is deliberately no acronym exception. The movie parser used to keep
+    any all-caps word of four characters or fewer as-is, on the theory that it
+    was an acronym like FBI or CIA. Length is a poor proxy for that: it also
+    catches the short words of a shouty release name, so "THE DARK KNIGHT" came
+    out as "THE DARK Knight", capitalizing by accident exactly the words a
+    title normally would not. Steve's call (2026-09-17) was to drop the rule
+    rather than keep a heuristic that is wrong more often than right. The cost
+    is real and accepted: "FBI" now becomes "Fbi". A curated list of known
+    acronyms would be the way back, not a length test.
+
     Args:
         text: String to title-case. Whitespace is normalized to single spaces.
-        preserve_short_acronyms: Leave an all-caps word of four characters or
-            fewer exactly as it is, so "FBI" does not become "Fbi". Off by
-            default: it also leaves the short words of a shouty release name
-            untouched, which is a trade only the movie parser currently wants.
 
     Returns:
         The title-cased string.
     """
     words = []
     for word in text.split():
-        if preserve_short_acronyms and word.isupper() and len(word) <= 4:
-            words.append(word)
-            continue
         titled = word.title()
         words.append(_RE_APOSTROPHE_SUFFIX.sub(
             lambda m: "'" + m.group(1).lower(), titled))

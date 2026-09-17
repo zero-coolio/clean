@@ -73,8 +73,14 @@ class TestCleanMovieTitle:
     def test_removes_quality_markers(self) -> None:
         assert clean_movie_title("Inception 1080p BluRay") == "Inception"
 
-    def test_preserves_acronyms(self) -> None:
-        assert clean_movie_title("FBI.Movie") == "FBI Movie"
+    def test_acronyms_are_no_longer_preserved(self) -> None:
+        """The old rule kept any all-caps word of four characters or fewer,
+        guessing it was an acronym. Length is a poor proxy: it also caught the
+        short words of a shouty release name, so "THE DARK KNIGHT" came out as
+        "THE DARK Knight". Rule dropped 2026-09-17; this is the accepted cost."""
+        assert clean_movie_title("FBI.Movie") == "Fbi Movie"
+        assert clean_movie_title("THE DARK KNIGHT") == "The Dark Knight"
+        assert clean_movie_title("THE.ROCK") == "The Rock"
 
     def test_title_case(self) -> None:
         assert clean_movie_title("the dark knight") == "The Dark Knight"
