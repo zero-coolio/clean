@@ -24,7 +24,11 @@ from ..config import (
 )
 from ..utils import normalize_unicode_separators, strip_noise_prefix
 from ..intake_filter import is_season_dir, movie_needs_processing
-from ..title_signal import describe_mismatch, folder_may_name_file
+from ..title_signal import (
+    RE_RELEASE_LANGUAGE_TAG,
+    describe_mismatch,
+    folder_may_name_file,
+)
 from .base import BaseCleanService
 
 
@@ -73,13 +77,28 @@ def clean_movie_title(raw_title: str) -> str:
     for marker in QUALITY_MARKERS:
         title = re.sub(rf"\b{marker}\b", "", title, flags=re.IGNORECASE)
     
-    # Remove release group patterns
-    title = re.sub(r"\s*-\s*[A-Za-z0-9]+$", "", title)
+    # Remove release group patterns. Upper case only: an any-case pattern
+    # treats a lowercase trailing word as a group tag and ate the "rabbit" off
+    # "the curse of the were-rabbit", which then queried TMDB as "The Curse Of
+    # The Were".
+    title = re.sub(r"\s*-\s*[A-Z0-9]{2,}$", "", title)
     title = re.sub(r"\s*\[[^\]]+\]$", "", title)
-    
+
+    # Remove language and packaging tags. Guarded: if a title is made only of
+    # words that look like tags, keep it rather than reducing it to nothing.
+    without_tags = RE_RELEASE_LANGUAGE_TAG.sub(" ", title)
+    if without_tags.strip():
+        title = without_tags
+
     # Normalize whitespace
     title = re.sub(r"\s+", " ", title).strip()
-    
+
+    # Tidy separators orphaned by the removals above: "ITA-ENG" losing both
+    # halves leaves a bare "-", which queried TMDB as "The End Of Oak Street -".
+    # Only isolated hyphens go, so "Were-Rabbit" and "Spider-Man" survive.
+    title = re.sub(r"\s+-\s+", " ", title)
+    title = title.strip(" -")
+
     # Title case (preserve short acronyms like FBI, CIA)
     words = title.split()
     result = []

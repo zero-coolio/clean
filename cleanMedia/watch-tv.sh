@@ -17,6 +17,17 @@
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# launchd does NOT read ~/.zprofile, ~/.zshrc or any login shell profile, so a
+# key exported there is invisible to this script when launchd starts it. That is
+# why TMDB lookup silently never ran under the watcher: TMDB_API_KEY was set in
+# ~/.zprofile and $TMDB_API_KEY was empty here, so --lookup was never passed.
+# Secrets live in this gitignored file, NOT in the .plist, which is tracked.
+ENV_FILE="${CLEAN_ENV_FILE:-$SCRIPT_DIR/.env}"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
+fi
 WATCH_DIR="${CLEAN_TV_DIR:-/Volumes/Seagate/seagate-qBittorrent}"
 MOVIE_DEST="${CLEAN_MOVIE_DEST:-/Volumes/Seagate/seagate-movie}"
 LOG_FILE="$SCRIPT_DIR/../logs/watch-tv.log"

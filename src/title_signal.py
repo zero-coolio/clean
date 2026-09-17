@@ -68,6 +68,28 @@ _LANGUAGES = frozenset({
 # "TC", "DV", "CAM"). Spliced together unanchored they match inside ordinary
 # words: "TS" ate the middle of "VTS_01_1" leaving "V", and would reduce
 # "Ghosts" to "Ghos". Require a non-alphanumeric boundary on both sides.
+# Language and packaging tags that appear in release names. Public, because
+# clean_movie_title needs the same vocabulary to build a TMDB query: without it
+# "The.End.of.Oak.Street...ITA-ENG.MULTI..." is queried as "The End Of Oak
+# Street Ita-Eng Multi", which matches nothing, while "The End Of Oak Street"
+# resolves on the first hit.
+#
+# Three characters minimum, and deliberately NOT the two-letter ISO codes in
+# _LANGUAGES above. The sets differ because the risk differs: dropping "it"
+# from an identity comparison is harmless, whereas stripping it from a title
+# erases the film called "It".
+RELEASE_LANGUAGE_TAGS = frozenset({
+    "eng", "english", "ita", "italian", "spa", "spanish", "fre", "french",
+    "ger", "german", "por", "portuguese", "nld", "dutch", "rus", "russian",
+    "jpn", "japanese", "chi", "chinese", "kor", "korean", "hin", "hindi",
+    "multi", "dual", "subbed", "dubbed", "vostfr", "truefrench",
+})
+
+RE_RELEASE_LANGUAGE_TAG = re.compile(
+    r"(?<![A-Za-z0-9])(?:" + "|".join(sorted(RELEASE_LANGUAGE_TAGS)) + r")(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
 _RE_QUALITY = re.compile(
     r"(?<![A-Za-z0-9])(?:" + "|".join(QUALITY_MARKERS) + r")(?![A-Za-z0-9])",
     re.IGNORECASE,

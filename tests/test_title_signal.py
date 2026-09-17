@@ -141,3 +141,24 @@ def test_end_to_end_misfiled_movie_is_left_alone(tmp_path, monkeypatch):
     assert misfiled.exists(), "a misfiled film must not be renamed to its neighbour"
     assert not (misfiled.parent / "Eater'S Guide To The World (2020).mkv").exists()
     assert placed.exists(), "a correctly placed film must be left alone"
+
+
+# --- the tag vocabulary shared with clean_movie_title ------------------------
+
+def test_release_tags_exclude_two_letter_codes():
+    """meaningful_tokens may drop "it"; clean_movie_title may not, because "It"
+    is a film. The two sets differ deliberately, so assert the boundary rather
+    than trusting a future edit to remember why."""
+    from src.title_signal import RELEASE_LANGUAGE_TAGS
+    assert all(len(t) >= 3 for t in RELEASE_LANGUAGE_TAGS)
+    for ambiguous in ("it", "de", "en", "es", "fr", "hi", "cc"):
+        assert ambiguous not in RELEASE_LANGUAGE_TAGS
+
+
+def test_release_tag_pattern_needs_a_boundary():
+    """Same anchoring lesson as the quality markers: "eng" must not match
+    inside "Engine" or "Avenger"."""
+    from src.title_signal import RE_RELEASE_LANGUAGE_TAG as R
+    assert R.sub("", "Engine") == "Engine"
+    assert R.sub("", "Avengers") == "Avengers"
+    assert R.sub("", "Movie.ENG.mkv") == "Movie..mkv"

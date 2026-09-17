@@ -79,6 +79,34 @@ class TestCleanMovieTitle:
     def test_title_case(self) -> None:
         assert clean_movie_title("the dark knight") == "The Dark Knight"
 
+    def test_strips_language_and_packaging_tags(self) -> None:
+        """The real 2026-09-15 arrival. Leaving "Ita-Eng Multi" on the end made
+        the TMDB query match nothing, so the file was reported unparsed and
+        never filed; the trimmed title resolves on the first hit."""
+        assert clean_movie_title(
+            "The.End.of.Oak.Street.2160p.HDR.ITA-ENG.MULTI.WEBRip.x265.AAC-V3SP4EV3R"
+        ) == "The End Of Oak Street"
+
+    def test_keeps_a_lowercase_trailing_word(self) -> None:
+        """An any-case release-group pattern read "-rabbit" as a group tag and
+        queried TMDB as "The Curse Of The Were"."""
+        assert clean_movie_title("the curse of the were-rabbit") == \
+            "The Curse Of The Were-Rabbit"
+
+    def test_strips_an_uppercase_release_group(self) -> None:
+        assert clean_movie_title("Interstellar.2014.2160p-RARBG") == "Interstellar 2014"
+
+    def test_preserves_hyphenated_titles(self) -> None:
+        assert clean_movie_title("Spider-Man.Far.From.Home") == "Spider-Man Far From Home"
+
+    def test_a_title_made_of_tag_words_survives(self) -> None:
+        """Guards against reducing a title to nothing. "It" is a film, which is
+        why the two-letter ISO codes are excluded from the tag set, and the
+        empty-result guard covers the rest."""
+        assert clean_movie_title("It") == "It"
+        assert clean_movie_title("It.Follows") == "It Follows"
+        assert clean_movie_title("Multi") == "Multi"
+
 
 class TestIsEnglishSubtitle:
     """Tests for English subtitle detection."""
