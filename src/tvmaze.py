@@ -334,7 +334,25 @@ def _sanitize_name(name: str) -> str:
 
 
 def _best_match(results: list[dict], year: str | None) -> tuple[int, str, str] | None:
-    """Pick the best result, preferring year match, then highest score.
+    """Pick the best result. An explicit `year` is a CONSTRAINT, not a preference.
+
+    When the caller supplies a year it came from the filename, where it is there
+    deliberately to disambiguate. If no candidate premiered in that year, this
+    returns None rather than handing back a differently-dated show: a year
+    mismatch is strong evidence the search found the wrong programme.
+
+    It used to fall through to the highest-scoring candidate and return THAT
+    candidate's year, so the filename's year was silently replaced. Of 660
+    entries in the persisted lookup cache, 33 had been overridden this way and
+    nearly every one was a wrong-show match, not year slop:
+
+        'wonder women (2019)'          -> 'Wonder Woman'      (1975)
+        'the matrix (1999)'            -> 'Matrix'            (1993)
+        'serenity (2005)'              -> 'Firefly'           (2002)
+        'mutiny on the bounty (1962)'  -> 'Country Strife - Abz on the Farm' (2015)
+
+    The Wonder Women case filed a 2019 Taiwanese drama into the 1975 Lynda
+    Carter folder, stamped with a 1975 episode title (CLEAN-7).
 
     Returns (show_id, name, year) or None.
     """
@@ -357,6 +375,10 @@ def _best_match(results: list[dict], year: str | None) -> tuple[int, str, str] |
         if year_matches:
             best = max(year_matches, key=lambda x: x[0])
             return best[1], best[2], best[3] if best[3] else year
+        # Nothing premiered in the year the filename states. Refuse rather than
+        # override: the caller keeps the name it parsed, which is honest, where
+        # a mismatched match invents a show and mislabels the episode.
+        return None
 
     best = max(candidates, key=lambda x: x[0])
     return best[1], best[2], best[3]
@@ -398,7 +420,14 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
             return result
 
     if logger:
-        logger.warning("TVMaze: no match for '%s'", name)
+        if year:
+            logger.warning(
+                "TVMaze: no match for '%s' — no candidate premiered in %s, "
+                "keeping the parsed name rather than overriding the year",
+                name, year,
+            )
+        else:
+            logger.warning("TVMaze: no match for '%s'", name)
     _cache[cache_key] = None
     _cache_dirty = True
     _save_cache()
