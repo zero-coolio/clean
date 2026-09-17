@@ -23,7 +23,11 @@ from ..config import (
     get_logger,
 )
 from ..utils import normalize_unicode_separators, strip_noise_prefix
-from ..intake_filter import is_season_dir, movie_needs_processing
+from ..intake_filter import (
+    is_beyond_movie_layout,
+    is_season_dir,
+    movie_needs_processing,
+)
 from ..title_signal import (
     RE_RELEASE_LANGUAGE_TAG,
     describe_mismatch,
@@ -90,14 +94,17 @@ def clean_movie_title(raw_title: str) -> str:
     if without_tags.strip():
         title = without_tags
 
-    # Normalize whitespace
-    title = re.sub(r"\s+", " ", title).strip()
+        # Tidy a separator orphaned by that removal: "ITA-ENG" losing both
+        # halves leaves a bare "-", which queried TMDB as "The End Of Oak
+        # Street -". Keyed on DOUBLE whitespace, which only the substitution
+        # above produces; a title's own separator has single spaces. An
+        # any-spacing pattern here rewrote 10 correctly placed films, turning
+        # "Batman - The Animated Series (1992)" into "Batman The Animated
+        # Series (1992)" and dragging their sidecars along.
+        title = re.sub(r"\s{2,}-|-\s{2,}", " ", title)
 
-    # Tidy separators orphaned by the removals above: "ITA-ENG" losing both
-    # halves leaves a bare "-", which queried TMDB as "The End Of Oak Street -".
-    # Only isolated hyphens go, so "Were-Rabbit" and "Spider-Man" survive.
-    title = re.sub(r"\s+-\s+", " ", title)
-    title = title.strip(" -")
+    # Normalize whitespace
+    title = re.sub(r"\s+", " ", title).strip(" -")
 
     # Title case (preserve short acronyms like FBI, CIA)
     words = title.split()
@@ -301,6 +308,16 @@ class CleanMovieService(BaseCleanService):
         except ValueError:
             rel = path
         if any(is_season_dir(part) for part in rel.parts):
+            return
+
+        # Nested deeper than a movie can be: TV extras under Features/,
+        # Featurettes/Specials/, Comic Relief/. Guarded HERE, not only in the
+        # structural filter, because the watcher's startup sweep is a FULL pass
+        # that never consults that filter. See is_beyond_movie_layout.
+        if is_beyond_movie_layout(rel):
+            self._logger.info(
+                "SKIP (nested below the movie layout, not a movie): %s", path
+            )
             return
 
         # Warn and skip if filename or any ancestor folder looks like TV content

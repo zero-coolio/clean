@@ -7,6 +7,7 @@ misjudge shapes that actually occur.
 import pytest
 
 from src.intake_filter import (
+    is_beyond_movie_layout,
     is_canonical_media_name,
     is_organized_dir,
     is_own_artifact,
@@ -410,3 +411,52 @@ def test_movie_filter_ignores_tv_territory(rel):
 ])
 def test_is_season_dir(name, expected):
     assert is_season_dir(name) is expected
+
+
+# --- nesting deeper than the movie layout -----------------------------------
+
+@pytest.mark.parametrize("rel", [
+    # TV extras in the shared intake dir. is_season_dir misses these because
+    # "Features" and "Featurettes/Specials" are not "Season NN". With --lookup
+    # on, the movie pass claimed 15 of them and TMDB answered for every one.
+    "Top Gear (2002)/480p Features/Apocalypse [2010].mp4",
+    "Top Gear (2002)/480p Features/Italian Job [2010].mp4",
+    "Top Gear (2002)/480p Comic Relief/Top Ground Gear Force [2008].mp4",
+    "The Thick of It (2005)/Featurettes/Specials/Behind the Scenes.mkv",
+])
+def test_nested_below_movie_layout_is_not_movie_work(rel):
+    assert is_beyond_movie_layout(rel) is True
+    assert movie_needs_processing(rel) is False
+
+
+@pytest.mark.parametrize("rel", [
+    # The movie layout itself, one level deep, sidecars included.
+    "Ad Astra (2019)/Ad Astra (2019).mkv",
+    "Ad Astra (2019)/Ad Astra (2019).eng.srt",
+    # A release folder's own Subs/ subfolder must still be processed: its top
+    # component is not an organized folder, so it never reaches the depth test.
+    "Some.Movie.2019.1080p.BluRay-GROUP/Subs/2_English.srt",
+    "Some.Movie.2019.1080p.BluRay-GROUP/movie.mkv",
+    # A loose file at the root.
+    "The.End.of.Oak.Street.2160p.mkv",
+])
+def test_movie_layout_and_release_folders_are_not_excluded_by_depth(rel):
+    assert is_beyond_movie_layout(rel) is False
+
+
+def test_nested_guard_also_applies_to_a_full_sweep(tmp_path, monkeypatch):
+    """The guard lives in process_file, not only in the structural filter: the
+    watcher's startup sweep is a FULL pass that never consults that filter, so
+    a filter-only guard would have left the startup run doing the damage."""
+    root = tmp_path / "intake"
+    extra = root / "Top Gear (2002)" / "480p Features" / "Italian Job [2010].mp4"
+    extra.parent.mkdir(parents=True)
+    extra.write_text("DATA")
+
+    svc = CleanMovieService()
+    monkeypatch.setattr(svc, "_process_audio_tracks", lambda *a, **k: None)
+    monkeypatch.setattr(svc, "_report_large_files", lambda *a, **k: None, raising=False)
+    # commit=True, no structural, no since: exactly the startup sweep.
+    svc.run(root=root, commit=True)
+
+    assert extra.exists(), "a TV extra must not be dragged off as a movie"

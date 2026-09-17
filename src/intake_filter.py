@@ -125,6 +125,32 @@ def is_season_dir(name: str) -> bool:
     return bool(_RE_SEASON_DIR.match(name))
 
 
+def is_beyond_movie_layout(rel_path: str | PurePath) -> bool:
+    """True if `rel_path` sits deeper than the movie layout can account for.
+
+    The movie service files exactly "Title (Year)/Title (Year).ext", one level
+    deep, sidecars included. Inside an organized folder, anything deeper
+    belongs to another scheme, and in the shared intake directory that means TV
+    extras:
+
+        Top Gear (2002)/480p Features/Apocalypse [2010].mp4
+        The Thick of It (2005)/Featurettes/Specials/Behind the Scenes.mkv
+
+    is_season_dir does not catch these, because "Features" and
+    "Featurettes/Specials" are not "Season NN". With --lookup enabled the movie
+    pass claimed 15 such files and TMDB gave an answer for every one, which
+    would have scattered a show's extras across the movie library under the
+    titles of unrelated films ("Apocalypse Now (1979)", "Sing: Thriller
+    (2024)", "Behind the Scenes (1914)").
+
+    Release folders are deliberately unaffected: their top component is not an
+    organized folder, so a movie's own "Subs/" subfolder still gets processed.
+    """
+    rel = PurePath(rel_path)
+    parts = rel.parts
+    return len(parts) > 2 and is_organized_dir(parts[0])
+
+
 def is_own_artifact(name: str) -> bool:
     """True for files clean itself writes and must never treat as work."""
     return name == ".DS_Store" or bool(_RE_JOURNAL.match(name))
@@ -196,6 +222,11 @@ def movie_needs_processing(rel_path: str | PurePath) -> bool:
     verdict = _tier_0_and_1(rel)
     if verdict is not None:
         return verdict
+
+    # Deeper than the movie layout allows. See is_beyond_movie_layout, which
+    # process_file also consults, so every mode agrees on this.
+    if is_beyond_movie_layout(rel):
+        return False
 
     # Tier 2: inside an organized folder but not a file clean placed there.
     return not is_placed_movie_file(rel.parts[0], rel.name)

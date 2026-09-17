@@ -99,6 +99,33 @@ class TestCleanMovieTitle:
     def test_preserves_hyphenated_titles(self) -> None:
         assert clean_movie_title("Spider-Man.Far.From.Home") == "Spider-Man Far From Home"
 
+    def test_language_NAMES_are_title_words_and_must_survive(self) -> None:
+        """The tag set holds codes, never full names. "italian" in it reduced
+        "Italian Job [2010].mp4" to a query of "Job", which TMDB answered "The
+        Italian Job (2003)" -- a different film, and the rename would have
+        destroyed the original name."""
+        assert clean_movie_title("Italian Job [2010]") == "Italian Job"
+        assert clean_movie_title("The.French.Connection") == "The French Connection"
+        assert clean_movie_title("The.English.Patient") == "The English Patient"
+        assert clean_movie_title("Russian.Ark") == "Russian Ark"
+        assert clean_movie_title("Chi-Raq") == "Chi-Raq"
+        assert clean_movie_title("Spanish.Affair") == "Spanish Affair"
+
+    def test_preserves_a_titles_own_hyphen_separator(self) -> None:
+        """Only a separator ORPHANED by tag removal goes, which is why the rule
+        keys on double whitespace. An any-spacing pattern rewrote 10 correctly
+        placed films and dragged their sidecars along."""
+        for title in (
+            "Batman - The Animated Series",
+            "Resident Evil - Infinite Darkness",
+            "Demolition - The Wrecking Crew",
+            "Monster Hunter Stories - Ride On",
+            "Nuova Scena - Rhythm + Flow Italia",
+        ):
+            assert clean_movie_title(title) == title
+        assert clean_movie_title("Spartacus - Blood and Sand - The Motion Comic") == \
+            "Spartacus - Blood And Sand - The Motion Comic"
+
     def test_a_title_made_of_tag_words_survives(self) -> None:
         """Guards against reducing a title to nothing. "It" is a film, which is
         why the two-letter ISO codes are excluded from the tag set, and the

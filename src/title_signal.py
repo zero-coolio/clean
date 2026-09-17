@@ -79,9 +79,15 @@ _LANGUAGES = frozenset({
 # from an identity comparison is harmless, whereas stripping it from a title
 # erases the film called "It".
 RELEASE_LANGUAGE_TAGS = frozenset({
-    "eng", "english", "ita", "italian", "spa", "spanish", "fre", "french",
-    "ger", "german", "por", "portuguese", "nld", "dutch", "rus", "russian",
-    "jpn", "japanese", "chi", "chinese", "kor", "korean", "hin", "hindi",
+    # Three-letter codes only, and only those that are not plausible English
+    # title words. The full NAMES are title words and must never be here:
+    # "italian" reduced "Italian Job [2010].mp4" to a query of "Job", which
+    # TMDB answered "The Italian Job (2003)" -- a different film, and the
+    # rename would have destroyed the original name. The same trap waits in
+    # The French Connection, The English Patient, Das Boot, Russian Ark.
+    # Also excluded for that reason: "chi" (Chi-Raq), "spa" (Spa), "por".
+    "ita", "eng", "fre", "ger", "nld", "rus", "jpn", "kor", "hin",
+    "swe", "dan", "nor", "fin", "pol", "tur", "ara", "heb",
     "multi", "dual", "subbed", "dubbed", "vostfr", "truefrench",
 })
 
