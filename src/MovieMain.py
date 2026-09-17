@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.config import DEFAULT_RECENT_WINDOW, parse_duration
+from src.cli_args import add_work_selection_args, resolve_since_seconds
 from src.service.clean_movie_service import CleanMovieService
 
 
@@ -27,30 +27,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use TMDB API to look up missing years (requires TMDB_API_KEY env var)",
     )
-    ap.add_argument(
-        "--since",
-        metavar="DURATION",
-        help=(
-            "Incremental mode: only process files modified within DURATION "
-            "(e.g. '1h', '30m', '2d', or a bare number of seconds). The "
-            "already-organized library is skipped. Omit for a full run."
-        ),
-    )
-    ap.add_argument(
-        "--recent",
-        action="store_true",
-        help=f"Incremental mode shorthand for --since {DEFAULT_RECENT_WINDOW}.",
-    )
+    add_work_selection_args(ap, "Title (Year)")
     return ap.parse_args()
-
-
-def resolve_since_seconds(since: str | None, recent: bool) -> float | None:
-    """Resolve --since / --recent flags into a window in seconds (or None)."""
-    if since:
-        return parse_duration(since)
-    if recent:
-        return parse_duration(DEFAULT_RECENT_WINDOW)
-    return None
 
 
 def main() -> None:
@@ -73,6 +51,7 @@ def main() -> None:
         lookup=args.lookup,
         dest=dest,
         since_seconds=since_seconds,
+        structural=args.structural,
     )
 
 

@@ -13,6 +13,7 @@ from typing import NamedTuple
 
 from ..config import VIDEO_EXT, JUNK_EXT, TV_SIDECAR_EXT, get_logger
 from ..utils import normalize_unicode_separators, strip_noise_prefix
+from ..intake_filter import tv_needs_processing
 from .base import BaseCleanService
 
 # Show-level rename hint: "Old Show Name==New Show Name"
@@ -305,6 +306,10 @@ class CleanService(BaseCleanService):
     """Service to clean and organize TV show files."""
 
     SERVICE_NAME = "clean-tv"
+
+    def _needs_processing(self, rel_path) -> bool:
+        """Structural work selection for the TV layout. See intake_filter."""
+        return tv_needs_processing(rel_path)
 
     def __init__(self) -> None:
         super().__init__(get_logger("clean-tv"))

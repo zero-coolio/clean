@@ -50,29 +50,28 @@ notify() {
 
 run_clean() {
     # Pass "--recent" for an event-triggered (incremental) run rather than a
-    # full pass. TV and movies then diverge: TV runs --structural (shape-based,
-    # see below) while movies keep the --recent mtime window. Either way the run
-    # is scoped so a single new download is organized in seconds instead of
-    # re-walking the whole ~300-folder library. The startup / --once sweep
-    # passes no argument at all, giving both a FULL pass — that is what catches
-    # anything that arrived while the watcher was down, and for TV it is also
-    # the pass that backfills episode titles onto already-placed files.
-    local since_flag=""
-    local tv_flag=""
+    # full pass, scoped so a single new download is organized in seconds instead
+    # of re-walking the whole ~300-folder library. The startup / --once sweep
+    # passes no argument at all, giving a FULL pass — that is what catches
+    # anything that arrived while the watcher was down, and it is also the pass
+    # that backfills episode titles onto already-placed files.
+    #
+    # Both services select with --structural, NOT the mtime window. qBittorrent
+    # downloads into a temp dir and MOVES the finished folder here, so files
+    # arrive carrying their temp-dir mtimes: anything that took longer than the
+    # window to download is already "too old" when it lands, and is skipped
+    # forever. Twice observed:
+    #   TV,    2026-08-22 — Peacemaker S01-S02 arrived 17:49:37 and clean filed
+    #          10 of 16 episodes, silently dropping the 6 written to temp an
+    #          hour earlier, leaving a partial library that looked successful.
+    #   Movie, 2026-09-15 — The End of Oak Street was MOVED in at 19:20:31 with
+    #          a 21-hour-old mtime, woke the watcher, and was then skipped by
+    #          the watcher's own window. It sat unrenamed until 2026-09-17.
+    # --structural selects by library shape instead, so it cannot miss a
+    # download and a dropped fswatch event costs latency, not the file.
+    local select_flag=""
     if [ "$1" == "--recent" ]; then
-        since_flag="--recent"
-        # TV uses --structural, NOT the mtime window. qBittorrent downloads into
-        # a temp dir and MOVES the finished folder here, so files arrive carrying
-        # their temp-dir mtimes: any pack that took longer than the window to
-        # download is already "too old" when it lands and is skipped forever.
-        # Observed 2026-08-22 — Peacemaker S01-S02 arrived 17:49:37 and clean
-        # filed 10 of 16 episodes, silently dropping the 6 written to temp an
-        # hour earlier, leaving a partial library that looked successful.
-        # --structural selects by library shape instead, so it cannot miss a
-        # download and a dropped fswatch event costs latency, not the file.
-        # Movies keep --recent: their layout has no SxxExx, so the structural
-        # filter does not apply (see src/intake_filter.py).
-        tv_flag="--structural"
+        select_flag="--structural"
     fi
 
     local now=$(date +%s)
@@ -135,12 +134,12 @@ run_clean() {
     # Run clean-tv
     cd "$SCRIPT_DIR/.."
     export PYTHONPATH="$SCRIPT_DIR/.."
-    python3 -m src.Main --directory "$WATCH_DIR" --commit $tv_flag 2>&1 | tee -a "$LOG_FILE"
+    python3 -m src.Main --directory "$WATCH_DIR" --commit $select_flag 2>&1 | tee -a "$LOG_FILE"
     local tv_exit=${PIPESTATUS[0]}
 
     # Run clean-movie on same source dir, routing matches to seagate-movie
     # Build base command (no --commit yet — used for dry-run safety check first)
-    local movie_base="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --dest \"$MOVIE_DEST\" $since_flag"
+    local movie_base="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --dest \"$MOVIE_DEST\" $select_flag"
     if [ -n "$TMDB_API_KEY" ]; then
         movie_base="$movie_base --lookup"
     fi

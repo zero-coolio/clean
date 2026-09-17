@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.config import DEFAULT_RECENT_WINDOW, parse_duration
+from src.cli_args import add_work_selection_args, resolve_since_seconds
 from src.service.clean_service import CleanService
 
 
@@ -21,42 +21,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--plan", action="store_true", help="Write journal only (no changes)")
     ap.add_argument("--undo", metavar="JOURNAL", help="Undo from journal file")
     ap.add_argument("--quarantine", help="Quarantine directory for sample files")
-    ap.add_argument(
-        "--since",
-        metavar="DURATION",
-        help=(
-            "Incremental mode: only process files modified within DURATION "
-            "(e.g. '1h', '30m', '2d', or a bare number of seconds). The "
-            "already-organized library is skipped. Omit for a full run."
-        ),
-    )
-    ap.add_argument(
-        "--recent",
-        action="store_true",
-        help=f"Incremental mode shorthand for --since {DEFAULT_RECENT_WINDOW}.",
-    )
-    ap.add_argument(
-        "--structural",
-        action="store_true",
-        help=(
-            "Select work by library STRUCTURE instead of file mtime: process "
-            "anything not yet filed under a 'Show (Year)' folder, plus anything "
-            "inside one whose name clean did not produce. Unlike --since this "
-            "cannot silently miss a download (torrents arrive from a temp dir "
-            "with stale mtimes), and a dropped watcher event costs latency, not "
-            "the file. Overrides --since/--recent."
-        ),
-    )
+    add_work_selection_args(ap, "Show (Year)")
     return ap.parse_args()
-
-
-def resolve_since_seconds(since: str | None, recent: bool) -> float | None:
-    """Resolve --since / --recent flags into a window in seconds (or None)."""
-    if since:
-        return parse_duration(since)
-    if recent:
-        return parse_duration(DEFAULT_RECENT_WINDOW)
-    return None
 
 
 def main() -> None:

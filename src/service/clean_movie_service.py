@@ -23,6 +23,7 @@ from ..config import (
     get_logger,
 )
 from ..utils import normalize_unicode_separators, strip_noise_prefix
+from ..intake_filter import is_season_dir, movie_needs_processing
 from .base import BaseCleanService
 
 
@@ -235,7 +236,6 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
 # Movie Service
 # ============================================================================
 
-_RE_SEASON_FOLDER = re.compile(r"^Season\s+\d+$", re.IGNORECASE)
 
 # Matches TV episode markers (S01E01, 1x01) and season packs (standalone S01)
 _RE_TV_IN_NAME = re.compile(
@@ -249,6 +249,10 @@ class CleanMovieService(BaseCleanService):
 
     SERVICE_NAME = "clean-movie"
 
+    def _needs_processing(self, rel_path) -> bool:
+        """Structural work selection for the movie layout. See intake_filter."""
+        return movie_needs_processing(rel_path)
+
     def __init__(self) -> None:
         super().__init__(get_logger("clean-movie"))
         self._use_tmdb_lookup = False
@@ -259,7 +263,7 @@ class CleanMovieService(BaseCleanService):
             rel = path.relative_to(root)
         except ValueError:
             rel = path
-        if any(_RE_SEASON_FOLDER.match(part) for part in rel.parts):
+        if any(is_season_dir(part) for part in rel.parts):
             return
 
         # Warn and skip if filename or any ancestor folder looks like TV content
@@ -430,6 +434,7 @@ class CleanMovieService(BaseCleanService):
         lookup: bool = False,
         dest: Path | None = None,
         since_seconds: float | None = None,
+        structural: bool = False,
     ) -> None:
         """Run the movie cleaning process.
 
@@ -443,9 +448,21 @@ class CleanMovieService(BaseCleanService):
                   when scanning a shared download directory.
             since_seconds: Optional incremental window (seconds); only files
                   modified within it are processed. None processes everything.
+            structural: Select files by path shape instead of mtime. Overrides
+                  since_seconds. See _needs_processing / intake_filter.
         """
         self._use_tmdb_lookup = lookup
-        super().run(root, commit, plan, quarantine, dest, since_seconds)
+        # Keywords, not positionals: this override shadows a 7-argument base
+        # signature, and the two lists have already drifted once.
+        super().run(
+            root=root,
+            commit=commit,
+            plan=plan,
+            quarantine=quarantine,
+            dest=dest,
+            since_seconds=since_seconds,
+            structural=structural,
+        )
     
     # =========================================================================
     # Legacy compatibility methods

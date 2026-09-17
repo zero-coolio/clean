@@ -12,7 +12,6 @@ from logging import Logger
 from pathlib import Path
 
 from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES
-from ..intake_filter import needs_processing
 from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
 from ..conflict_policy import Candidate, choose_winner
 from ..qbittorrent import QbitReaper
@@ -198,6 +197,32 @@ class BaseCleanService(ABC):
             return path.stat().st_mtime >= cutoff
         except OSError:
             return True
+
+    def _needs_processing(self, rel_path) -> bool:
+        """Return True if the path's SHAPE says clean still has work to do.
+
+        The structural counterpart to `_is_recent`, and the reason structural
+        mode cannot silently drop a slow download the way the mtime window does.
+        Deliberately abstract: the answer depends on the library layout a
+        service produces, and guessing wrong is worse than not answering. The TV
+        tier-2 test keys on an SxxExx stem, so applying it to a movie library
+        would mark every movie as unfinished work on every run.
+
+        Args:
+            rel_path: Path RELATIVE to the library root (see intake_filter).
+
+        Returns:
+            True if the file should be handed to process_file.
+
+        Raises:
+            NotImplementedError: if this service has no structural mode. Only
+                reachable when a caller passes structural=True, so services that
+                never use it (e.g. transcode) are unaffected.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no structural intake filter; "
+            "run it with --since/--recent, or give it one in intake_filter."
+        )
 
     def _before_run(self, root: Path, commit: bool, journal: list[dict]) -> None:
         """Hook called before the main file walk. Override in subclasses for pre-processing."""
@@ -595,7 +620,7 @@ class BaseCleanService(ABC):
             if structural:
                 # Structural mode ignores mtime entirely and asks whether the
                 # path's SHAPE says there is work left. See intake_filter.
-                if not needs_processing(path.relative_to(root)):
+                if not self._needs_processing(path.relative_to(root)):
                     skipped_old += 1
                     continue
             elif not self._is_recent(path, cutoff):
@@ -692,7 +717,7 @@ class BaseCleanService(ABC):
             if not path.is_file():
                 continue
             if structural:
-                if not needs_processing(path.relative_to(root)):
+                if not self._needs_processing(path.relative_to(root)):
                     continue
             elif not self._is_recent(path, cutoff):
                 continue
