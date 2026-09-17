@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from ..config import VIDEO_EXT, JUNK_EXT, TV_SIDECAR_EXT, get_logger
-from ..utils import normalize_unicode_separators, strip_noise_prefix
+from ..utils import normalize_unicode_separators, strip_noise_prefix, title_case
 from ..intake_filter import tv_needs_processing
 from .base import BaseCleanService
 
@@ -139,7 +139,7 @@ class ParsedEpisode(NamedTuple):
 def _clean_show_name(raw_show: str, remainder: str) -> str:
     """Title-case + year-normalize a raw show fragment (shared parse logic)."""
     show = re.sub(r"[._\-]+", " ", raw_show).strip()
-    show = re.sub(r"\s+", " ", show).title()
+    show = title_case(show)
     # Normalize bare year to parenthesized form: "Show Name 2002" → "Show Name (2002)"
     show = re.sub(r"\s+((?:19|20)\d{2})$", r" (\1)", show)
     # If no year in the show name, check the remainder (e.g. Show.S01E01.(2002).mkv)
@@ -202,7 +202,7 @@ def _title_hint_from_remainder(remainder: str) -> str:
     t = re.sub(r"\s+", " ", t).strip(" .-_")
     # Drop a leading bare year token left over from "Show 1998 Title" remainders.
     t = re.sub(r"^(?:19|20)\d{2}\b\s*", "", t).strip()
-    return t.title() if t else ""
+    return title_case(t) if t else ""
 
 
 def parse_episode_detail(s: str) -> ParsedEpisode | None:

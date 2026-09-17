@@ -22,7 +22,7 @@ from ..config import (
     QUALITY_MARKERS,
     get_logger,
 )
-from ..utils import normalize_unicode_separators, strip_noise_prefix
+from ..utils import normalize_unicode_separators, strip_noise_prefix, title_case
 from ..intake_filter import (
     is_beyond_movie_layout,
     is_season_dir,
@@ -107,15 +107,7 @@ def clean_movie_title(raw_title: str) -> str:
     title = re.sub(r"\s+", " ", title).strip(" -")
 
     # Title case (preserve short acronyms like FBI, CIA)
-    words = title.split()
-    result = []
-    for word in words:
-        if word.isupper() and len(word) <= 4:
-            result.append(word)
-        else:
-            result.append(word.title())
-    
-    return " ".join(result)
+    return title_case(title, preserve_short_acronyms=True)
 
 
 def parse_movie_from_string(s: str) -> tuple[str, str] | None:
