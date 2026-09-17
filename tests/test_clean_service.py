@@ -255,8 +255,11 @@ class TestPlaceholderShowName:
 
     @pytest.mark.parametrize(
         "name",
-        ["Episodes", "Episode Three", "The Chapter", "Studio 60", "Letterkenny (2016)"],
+        ["Episodes", "Episode Three", "The Chapter", "Studio 60", "Letterkenny (2016)",
+         "The Tonight Show", "Regular Show", "The Show Must Go On"],
     )
+    # "Show" itself is accepted, not rejected. See the note on
+    # _PLACEHOLDER_SHOW_NAMES for why that is a deliberate open question.
     def test_real_names_accepted(self, name: str) -> None:
         assert _has_real_show_text(name)
 
@@ -841,3 +844,75 @@ class TestIncrementalRun:
             "New.Show.S02E03.mp4",
             "Stale.Show.S04E05.mp4",
         }
+
+
+class TestCanonicalLayoutWithTVMaze:
+    """The layout a real run produces, with TVMaze stubbed deterministically.
+
+    conftest keeps the suite offline, which is what made the four integration
+    tests above honest again. But those four then only cover the fallback path,
+    and the canonical path was previously exercised only by accident, over the
+    network, in tests that asserted the wrong thing anyway. It is the path
+    every real run takes, so it gets a test of its own that cannot flake.
+    """
+
+    EPISODES = [
+        {"season": 5, "episode": 1, "title": "We Don't Fight at Weddings",
+         "airdate": "2018-02-04"},
+        {"season": 5, "episode": 2, "title": "Holy Sh*t", "airdate": "2018-02-04"},
+    ]
+
+    @pytest.fixture
+    def letterkenny(self, monkeypatch):
+        """TVMaze answering for Letterkenny, with no socket involved."""
+        monkeypatch.setattr(
+            "src.tvmaze.lookup_show",
+            lambda name, logger=None: ("Letterkenny", "2016"),
+        )
+        monkeypatch.setattr("src.tvmaze.resolve_show_id", lambda name, logger=None: 30770)
+        monkeypatch.setattr(
+            "src.tvmaze.get_show_episodes", lambda name, logger=None: self.EPISODES
+        )
+        monkeypatch.setattr(
+            "src.tvmaze.lookup_episode_name",
+            lambda name, season, episode, logger=None: next(
+                (e["title"] for e in self.EPISODES
+                 if e["season"] == int(season) and e["episode"] == int(episode)),
+                None,
+            ),
+        )
+
+    def _run(self, tmp_path: Path) -> Path:
+        root = tmp_path / "intake"
+        root.mkdir()
+        wrapper = root / "Letterkenny.S05.1080p.HULU.WEBRip.AAC2.0.x264-monkee[rartv]"
+        wrapper.mkdir()
+        src_file = wrapper / "Letterkenny.S05E01.1080p.HULU.WEBRip.AAC2.0.x264-monkee.mkv"
+        src_file.write_text("FAKE_DATA", encoding="utf-8")
+
+        CleanService().run(root=root, commit=True, plan=False, quarantine=None)
+        return root
+
+    def test_show_folder_carries_the_year(self, tmp_path, letterkenny):
+        root = self._run(tmp_path)
+        assert (root / "Letterkenny (2016)").is_dir()
+        assert not (root / "Letterkenny").exists(), \
+            "the bare name would split one show across two folders"
+
+    def test_filename_carries_year_and_episode_title(self, tmp_path, letterkenny):
+        root = self._run(tmp_path)
+        dest = (root / "Letterkenny (2016)" / "Season 05"
+                / "Letterkenny.(2016).S05E01.We.Don't.Fight.at.Weddings.mkv")
+        assert dest.exists()
+        assert dest.read_text(encoding="utf-8") == "FAKE_DATA"
+
+    def test_release_wrapper_is_consumed(self, tmp_path, letterkenny):
+        root = self._run(tmp_path)
+        assert not (root / "Letterkenny.S05.1080p.HULU.WEBRip.AAC2.0.x264-monkee[rartv]").exists()
+
+    def test_offline_falls_back_to_the_bare_name(self, tmp_path):
+        """No stub, so conftest's offline default applies: the run still files
+        the episode, just without the year or the title. Asserted so the
+        difference between the two paths is visible in one place."""
+        root = self._run(tmp_path)
+        assert (root / "Letterkenny" / "Season 05" / "Letterkenny.S05E01.mkv").exists()
