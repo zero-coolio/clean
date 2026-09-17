@@ -496,24 +496,43 @@ class BaseCleanService(ABC):
         """
         from ..config import SUBS_FOLDER_NAMES
         
-        # Try filename first
+        # Try the filename first. It is the stronger signal: it travels with the
+        # file, whereas a folder only records where someone last dropped it.
         parsed = self.parse_media_info(path.name)
         if parsed:
             return parsed
-        
-        # Try parent folder
+
+        # Fall back to the folder, but only where the filename has not already
+        # claimed to be something else. See _folder_fallback_allowed.
         parsed = self.parse_media_info(path.parent.name)
-        if parsed:
+        if parsed and self._folder_fallback_allowed(path, path.parent.name):
             return parsed
-        
+
         # Try grandparent for Subs/ folders
         in_subs_folder = path.parent.name.lower() in SUBS_FOLDER_NAMES
         if in_subs_folder and len(path.parents) >= 2:
-            parsed = self.parse_media_info(path.parents[1].name)
-            if parsed:
+            grandparent = path.parents[1].name
+            parsed = self.parse_media_info(grandparent)
+            if parsed and self._folder_fallback_allowed(path, grandparent):
                 return parsed
-        
+
         return None
+
+    def _folder_fallback_allowed(self, path: Path, folder_name: str) -> bool:
+        """May `folder_name` supply the title for `path`, the filename having failed?
+
+        Base allows it, preserving the behaviour every service had before this
+        hook existed. Override where a filename that disagrees with its folder
+        should be believed over it, rather than silently renamed to match.
+
+        Args:
+            path: The file being named.
+            folder_name: The ancestor folder that parsed successfully.
+
+        Returns:
+            True to accept the folder's title for this file.
+        """
+        return True
     
     def _is_in_release_context(self, path: Path) -> bool:
         """Check if a file is in a release folder context.

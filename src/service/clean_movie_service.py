@@ -24,6 +24,7 @@ from ..config import (
 )
 from ..utils import normalize_unicode_separators, strip_noise_prefix
 from ..intake_filter import is_season_dir, movie_needs_processing
+from ..title_signal import describe_mismatch, folder_may_name_file
 from .base import BaseCleanService
 
 
@@ -252,6 +253,23 @@ class CleanMovieService(BaseCleanService):
     def _needs_processing(self, rel_path) -> bool:
         """Structural work selection for the movie layout. See intake_filter."""
         return movie_needs_processing(rel_path)
+
+    def _folder_fallback_allowed(self, path: Path, folder_name: str) -> bool:
+        """Refuse a folder title that contradicts the filename. See title_signal.
+
+        The movie parser only succeeds on a name containing a year, so every
+        yearless file reaches the folder fallback — including files that are
+        plainly some other film, parked in a folder by hand. Renaming those
+        destroys the one piece of evidence about what they actually are, so they
+        stay put and get reported instead.
+        """
+        if folder_may_name_file(path.stem, folder_name):
+            return True
+        self._logger.warning(
+            "REFUSE FOLDER TITLE: %s — filename disagrees with '%s' (%s)",
+            path, folder_name, describe_mismatch(path.stem, folder_name),
+        )
+        return False
 
     def __init__(self) -> None:
         super().__init__(get_logger("clean-movie"))
