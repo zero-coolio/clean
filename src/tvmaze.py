@@ -268,6 +268,26 @@ def _strip_stopwords(name: str) -> str:
     return " ".join(filtered).strip()
 
 
+# A single-letter initial ("C", "S") or a possessive ("Forester's").
+_RE_INITIAL = re.compile(r"^[A-Za-z]\.?$")
+_RE_POSSESSIVE = re.compile(r"['’]s$", re.IGNORECASE)
+
+
+def _is_author_cruft(prefix_words: list[str]) -> bool:
+    """True when a dropped prefix looks like an author/initial credit.
+
+    Guards the tail-word fallback in `_query_variants`. "C S Forester's" is
+    cruft in front of the real title; "Top Gear" and "Spider Man" are the title.
+    Requires a possessive or an initial, which is what "author credit" actually
+    looks like, rather than a length heuristic that cannot tell them apart.
+    """
+    if not prefix_words:
+        return False
+    return any(
+        _RE_POSSESSIVE.search(w) or _RE_INITIAL.match(w) for w in prefix_words
+    )
+
+
 def _query_variants(name: str) -> list[str]:
     """Return query strings to try in order, mirroring lime's TVMazeService logic."""
     base = _strip_year(name).strip()
@@ -292,9 +312,26 @@ def _query_variants(name: str) -> list[str]:
     # "C S Forester's Horatio Hornblower" → "Horatio Hornblower". Tried LAST
     # (lowest priority) and only for 4+ word names, so they never override a
     # confident full-name match and can't mangle short titles.
+    #
+    # Gated on the DROPPED PREFIX actually looking like that cruft. Applied to
+    # every long name it matched unrelated shows by their generic suffix, and
+    # because TVMaze returns nothing for the full name, the bogus tail match was
+    # the only one on offer (CLEAN-12):
+    #
+    #   "Spider Man The Animated Series"  → "The Animated Series"
+    #                                     → Batman - The Animated Series (1992)
+    #   "Top Gear The Perfect Road Trip"  → "Road Trip" → The Road Trip (2024)
+    #
+    # Coverage or length tests cannot separate these from the real case:
+    # "Horatio Hornblower" is 2 of 4 words, "Road Trip" is 2 of 6, and the
+    # legitimate one is not the longer. What distinguishes them is what is being
+    # DISCARDED: a possessive or initials is cruft, "Top Gear" is the title.
     words = base.split()
     if len(words) >= 4:
         for n in (3, 2):
+            prefix = words[:-n]
+            if not _is_author_cruft(prefix):
+                continue
             tail = " ".join(words[-n:])
             if tail not in variants:
                 variants.append(tail)
