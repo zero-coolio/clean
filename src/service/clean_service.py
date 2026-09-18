@@ -29,8 +29,16 @@ _RE_EPISODE_IN_NAME = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,2})")
 
 
 # Episode parsing patterns
+# Season allows up to 4 digits because CleanMedia itself writes year-seasons:
+# the TVMaze renumber files anthologies and TV-film runs under their broadcast
+# year, producing names like
+# "C.S.Forester's.Horatio.Hornblower.(1998).S2001E01.Hornblower.Mutiny.mp4".
+# With a 1-2 digit season those names could not be read back, so eight files
+# were frozen: never re-verified, re-titled, moved, or repaired by any later
+# fix, and logged as SKIP (unparsed media) on every run (CLEAN-11). Anything
+# CleanMedia emits must survive a round trip.
 RE_SXXEYY = re.compile(
-    r"^(?P<show>.*?)[.\s\-_]*S(?P<season>\d{1,2})[.\s\-_]*E(?P<episode>\d{1,2})",
+    r"^(?P<show>.*?)[.\s\-_]*S(?P<season>\d{1,4})[.\s\-_]*E(?P<episode>\d{1,2})",
     re.IGNORECASE,
 )
 RE_X = re.compile(
