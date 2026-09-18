@@ -52,6 +52,36 @@ RE_SEASON_EPISODE = re.compile(
 _RE_COMPACT_TOKEN = re.compile(r"(?:^|[.\s_\-])(\d{3,4})(?=[.\s_\-]|$)")
 
 
+_RE_YEAR_TOKEN = re.compile(r"(?:^|[.\s_\-])((?:19|20)\d{2})(?=[.\s_\-]|$)")
+
+
+def _looks_like_a_movie(name: str) -> bool:
+    """True when `name` is <title> <year> <release noise> and nothing else.
+
+    The arbitration this parser never had. The movie service refuses TV-looking
+    content (_RE_TV_IN_NAME); nothing refused the reverse, so TV claimed
+    anything its regexes could match and won every tie by default. A film with
+    a number in its title lost that tie:
+
+        The.355.2022.1080p.BluRay.x264   -> show "The (2022)"  S03E55
+        Room.237.2012.1080p.BluRay.x264  -> show "Room (2012)" S02E37
+
+    The discriminator is what sits BETWEEN the year and the packaging. A TV
+    release puts its episode code there; a film puts nothing there, because the
+    year is the last thing it has to say about itself:
+
+        Hawaii.Five-0.2010.713.hdtv-lol   713 between 2010 and hdtv  -> TV
+        F1 2025 1080p BluRay DDP ...      noise straight after 2025  -> movie
+
+    Only consulted for the last-resort parsers. An explicit SxxExx, 1x02 or
+    "Season 2 Episode 5" is unambiguous and still wins, so a TV release that
+    carries both a year and a real marker is untouched.
+    """
+    noise = _RE_QUALITY_NOISE.search(name)
+    noise_at = noise.start() if noise else len(name)
+    return any(m.end(1) >= noise_at for m in _RE_YEAR_TOKEN.finditer(name))
+
+
 def _parse_compact_code(name: str) -> tuple[str, str, str, int] | None:
     """Last-resort parse for the scene compact-code episode format.
 
@@ -248,6 +278,13 @@ def parse_episode_detail(s: str) -> ParsedEpisode | None:
         episode = match.group("episode")
         match_end = match.end()
     else:
+        # No explicit marker. Before guessing, ask whether this is a TV release
+        # at all: a name that is title + year + packaging is a film, and the
+        # guesses below would invent an episode out of a number in its title.
+        # See _looks_like_a_movie.
+        if _looks_like_a_movie(name):
+            return None
+
         # Looser fallbacks only when the explicit forms miss: scene compact code
         # (which carries a real season) first, then the seasonless bare number.
         compact = _parse_compact_code(name)
