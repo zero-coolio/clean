@@ -44,6 +44,16 @@ NOISE_PREFIX_PATTERNS = [
     r"^www\.UIndex\.org\s*-\s*",
     # Handle bracketed prefixes like [YTS], [rartv], etc.
     r"^\[(?:tgx|rartv|rarbg|eztv|yts|yify)\][\s._-]*",
+    # Any leading bracket whose contents look like a site domain, so a new
+    # tracker does not need adding to the list above: [Torrentcouch.Com],
+    # [Torrentcouch Com], [www.Site.org]. Matched on the TLD-ish token after a
+    # dot or space, which leaves a non-domain bracket such as "[2019]" alone.
+    # Without this, "[Torrentcouch.Com].Gotham.S04E19.mp4" parsed to the show
+    # "[Torrentcouch Com] Gotham", TVMaze could not match it, the files were
+    # filed under that junk name, and every later run saw them as already
+    # placed. 22 Gotham season 4 episodes sat stranded beside the real show
+    # with no warning logged (CLEAN-10).
+    r"^\[[^\]]*[.\s](?:com|net|org|to|tv|me|cc|io|se|ws|ag|eu|info|biz|xyz)\s*\][\s._-]*",
     # Handle unbracketed prefixes like rarbg-, yts., etc.
     r"^(?:tgx|rartv|rarbg|eztv|yts|yify|eztv\.re)[\s._-]+",
     r"^www\.",
