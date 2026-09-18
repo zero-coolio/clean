@@ -65,8 +65,21 @@ def _parse_compact_code(name: str) -> tuple[str, str, str, int] | None:
     from a year, so it is (deliberately) skipped — years are far more common
     than 20+ season shows, and misclassifying a year as an episode is worse.
     """
+    # Everything from the first quality/release marker onward is packaging, not
+    # episode numbering, so a digit run in there is never a compact code. The
+    # delimiter test above already rejects "x264" and "x265", where the digits
+    # are glued to the x, but a single space defeats it: the release
+    # "F1 2025 1080p BluRay DDP 5 1 10bit H 265-iVy" leaves "265" standalone,
+    # and the film F1 (2025) was filed as S02E65 of a show named after its own
+    # release string (2026-09-17). _RE_QUALITY_NOISE already knows this whole
+    # vocabulary, "h 265" included; this parser just never asked it.
+    noise = _RE_QUALITY_NOISE.search(name)
+    noise_at = noise.start() if noise else len(name)
+
     for m in _RE_COMPACT_TOKEN.finditer(name):
         tok = m.group(1)
+        if m.start(1) >= noise_at:
+            break  # inside the release-noise tail; nothing past here is an episode
         if len(tok) == 4 and re.fullmatch(r"(?:19|20)\d{2}", tok):
             continue  # release year, not an episode code
         if len(tok) == 3:

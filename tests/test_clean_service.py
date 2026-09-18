@@ -73,6 +73,34 @@ class TestParseEpisodeFromString:
         result = parse_episode_from_string("Hawaii.Five-0.2010.S07E13.HDTV.x264-LOL")
         assert result == ("Hawaii Five 0 (2010)", "07", "13")
 
+    def test_a_spaced_codec_is_not_an_episode_code(self) -> None:
+        """The real one. F1 (2025) was filed as S02E65 of a show named after
+        its own release string, because the uploader wrote the codec as "H 265"
+        with a space instead of "H.265" or "x265", leaving "265" standalone.
+        The delimiter test already rejected x264/x265, where the digits are
+        glued to the x; one space walked straight past it."""
+        assert parse_episode_from_string(
+            "F1 2025 1080p BluRay DDP 5 1 10bit H 265-iVy.mkv"
+        ) is None
+
+    @pytest.mark.parametrize("name", [
+        "Sinners 2025 1080p BluRay DDP 5 1 10bit H 265-iVy.mkv",
+        "Heat 1995 1080p BluRay DDP 5 1 10bit H 264-GRP.mkv",
+        "Dune 2021 2160p UHD BluRay DDP 7 1 HDR x 265-GRP.mkv",
+    ])
+    def test_no_digit_run_after_release_noise_is_an_episode(self, name: str) -> None:
+        """Not codec-specific: everything from the first quality marker onward
+        is packaging, so no digit run in there is episode numbering."""
+        assert parse_episode_from_string(name) is None
+
+    def test_a_compact_code_BEFORE_the_noise_still_parses(self) -> None:
+        """The guard is positional, not a blanket ban. These are the releases
+        the compact-code rule exists for, and the code precedes the noise."""
+        assert parse_episode_from_string("hawaii.five-0.2010.713.hdtv-lol") == \
+            ("Hawaii Five 0 (2010)", "07", "13")
+        assert parse_episode_from_string("South.Park.1314.HDTV.x264-GROUP") == \
+            ("South Park", "13", "14")
+
     def test_bare_episode_number_seasonless(self) -> None:
         """Seasonless miniseries with a leading-zero episode number -> S01Exx."""
         result = parse_episode_from_string("Horatio Hornblower 03 The Duchess And The Devil 480P H")
