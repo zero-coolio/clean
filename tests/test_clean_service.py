@@ -969,3 +969,61 @@ class TestCanonicalLayoutWithTVMaze:
         difference between the two paths is visible in one place."""
         root = self._run(tmp_path)
         assert (root / "Letterkenny" / "Season 05" / "Letterkenny.S05E01.mkv").exists()
+
+
+class TestTvRefusesMovieShape:
+    """The arbitration the TV parser never had.
+
+    The movie service refuses TV-looking content (_RE_TV_IN_NAME). Nothing
+    refused the reverse, so TV claimed whatever its regexes matched and won
+    every tie. CLEAN-8 stopped a digit run INSIDE the release-noise tail from
+    reading as an episode; it could not help when the digits come before the
+    noise, which is any film with a number in its title.
+    """
+
+    @pytest.mark.parametrize("name,would_have_been", [
+        ("The.355.2022.1080p.BluRay.x264-GROUP.mkv", "The (2022) S03E55"),
+        ("Room.237.2012.1080p.BluRay.x264.mkv", "Room (2012) S02E37"),
+        ("Area.407.2012.720p.WEB.mkv", "Area (2012) S04E07"),
+    ])
+    def test_a_film_with_a_number_in_its_title(self, name, would_have_been):
+        """Each of these was filed under a nonsense show folder, and landing
+        under a Season folder made it unrecoverable by the movie pass."""
+        assert parse_episode_from_string(name) is None, \
+            f"would have parsed as {would_have_been}"
+
+    @pytest.mark.parametrize("name", [
+        "F1 2025 1080p BluRay DDP 5 1 10bit H 265-iVy.mkv",
+        "Flight.7500.2014.1080p.BluRay.mkv",
+        "Apollo.13.1995.1080p.BluRay.x264.mkv",
+        "The.Dark.Knight.2008.1080p.BluRay.x264-GROUP.mkv",
+    ])
+    def test_title_year_then_packaging_is_a_film(self, name):
+        assert parse_episode_from_string(name) is None
+
+    @pytest.mark.parametrize("name,expected", [
+        # A TV release puts its episode code BETWEEN the year and the noise.
+        # That gap is the whole discriminator, so these must keep working.
+        ("hawaii.five-0.2010.713.hdtv-lol", ("Hawaii Five 0 (2010)", "07", "13")),
+        ("South.Park.1314.HDTV.x264-GROUP", ("South Park", "13", "14")),
+        ("Horatio Hornblower 03 The Duchess And The Devil 480p",
+         ("Horatio Hornblower", "01", "03")),
+    ])
+    def test_a_real_tv_release_still_parses(self, name, expected):
+        assert parse_episode_from_string(name) == expected
+
+    @pytest.mark.parametrize("name,expected", [
+        # An explicit marker is unambiguous and is never second-guessed, even
+        # when the name also carries a year and heavy packaging.
+        ("Dark.Matter.(2015).S02E04.1080p.WEB-DL.mkv", ("Dark Matter (2015)", "02", "04")),
+        ("Hawaii.Five-0.2010.S07E13.HDTV.x264-LOL", ("Hawaii Five 0 (2010)", "07", "13")),
+        ("Avenue 5 - 1x02 - Pilot.mkv", ("Avenue 5", "01", "02")),
+        ("Some.Show.2019.Season.3.Episode.7.720p.mkv", ("Some Show (2019)", "03", "07")),
+    ])
+    def test_an_explicit_marker_still_wins(self, name, expected):
+        assert parse_episode_from_string(name) == expected
+
+    def test_no_year_means_no_opinion(self):
+        """The guard keys on a year. Without one it stays out of the way and
+        the last-resort parsers behave exactly as before."""
+        assert parse_episode_from_string("South.Park.1314.HDTV.x264-GROUP") is not None
