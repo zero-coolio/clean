@@ -18,8 +18,20 @@ IMAGE_EXT = frozenset({".jpg", ".jpeg", ".png", ".gif", ".bmp"})
 # Files to always delete
 JUNK_EXT = frozenset({".ds_store", ".rar", ".r00", ".r01", ".sfv", ".nzb", ".par2", ".srr"})
 
-# TV-specific: keep these as sidecars
-TV_SIDECAR_EXT = SUBTITLE_EXT | frozenset({".nfo", ".txt"})
+# TV-specific: keep these as sidecars.
+#
+# .txt is deliberately NOT here. A sidecar is parsed, show-matched and filed
+# exactly like an episode, so it can mint a show folder with no media anywhere
+# near it. Uploaders plant advertising .txt files inside release folders, and
+# one of them became a show: spam for Rosewood was filed as
+# "Club Friday The Series - Unhappy Birthday (2021)/Season 01/
+#  Club.Friday.The.Series.-.Unhappy.Birthday.(2021).S01E01.Episode.1.txt"
+# with an episode title attached (CLEAN-16).
+#
+# The extension bought nothing: of all 56 .txt files on the volume, every one
+# contained a magnet link and not a single one sat beside media with a matching
+# stem. .nfo and subtitles stay, because those do accompany real media.
+TV_SIDECAR_EXT = SUBTITLE_EXT | frozenset({".nfo"})
 
 # Movie-specific: delete these (they're usually release info)
 MOVIE_DELETE_EXT = JUNK_EXT | frozenset({".nfo", ".txt"})
