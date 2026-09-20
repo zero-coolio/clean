@@ -9,13 +9,15 @@ from __future__ import annotations
 import pytest
 
 import src.imdb as imdb
+from src.lookup_cache import LookupCache
 
 
 @pytest.fixture(autouse=True)
-def _isolate(monkeypatch):
-    # No disk cache, fresh in-memory cache, no network, no rate-limit sleeps.
-    monkeypatch.setattr(imdb, "_cache", {})
-    monkeypatch.setattr(imdb, "_save_cache", lambda: None)
+def _isolate(monkeypatch, tmp_path):
+    # A real cache over a throwaway file, so these tests exercise the same
+    # code path production uses, not a dict standing in for it. No network,
+    # no rate-limit sleeps.
+    monkeypatch.setattr(imdb, "_cache", LookupCache(tmp_path / "imdb_cache.json"))
     monkeypatch.setattr(imdb, "_MIN_INTERVAL", 0.0)
 
 

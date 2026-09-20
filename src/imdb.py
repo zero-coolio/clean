@@ -28,10 +28,13 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .lookup_cache import MISS, LookupCache
+
 # Persisted, so repeat runs don't re-hit IMDb. Sits next to the other caches.
+# A hit keeps forever; a miss expires, so one bad day at IMDb does not freeze a
+# file permanently. See lookup_cache. (CLEAN-13)
 _CACHE_PATH = Path(__file__).parent / ".imdb_cache.json"
-_cache: dict[str, tuple[str, str] | None] = {}
-_cache_dirty = False
+_cache = LookupCache(_CACHE_PATH)
 
 _last_request = 0.0
 _MIN_INTERVAL = 0.34   # be polite to the endpoint
@@ -62,30 +65,6 @@ def _normalize(title: str) -> str:
     disagree.
     """
     return _RE_ARTICLE.sub("", _normalize_keep_article(title))
-
-
-def _load_cache() -> None:
-    global _cache
-    if _CACHE_PATH.exists():
-        try:
-            raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
-            _cache = {k: (tuple(v) if v else None) for k, v in raw.items()}
-        except Exception:
-            pass
-
-
-def _save_cache() -> None:
-    global _cache_dirty
-    if not _cache_dirty:
-        return
-    try:
-        serializable = {k: (list(v) if v else None) for k, v in _cache.items()}
-        _CACHE_PATH.write_text(
-            json.dumps(serializable, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        _cache_dirty = False
-    except Exception:
-        pass
 
 
 def _fetch(title: str) -> list[dict]:
@@ -134,11 +113,14 @@ def resolve_movie(title: str, year: str | None = None, logger=None):
     differs from the query must match the year EXACTLY. Same-title candidates
     keep the +/- 1 window that absorbs festival-vs-release drift.
     """
-    global _last_request, _cache_dirty
+    global _last_request
 
     key = f"{_normalize(title)}|{year or ''}"
-    if key in _cache:
-        return _cache[key]
+    cached = _cache.get(key)
+    if cached is MISS:
+        return None
+    if cached is not None:
+        return tuple(cached)
 
     delta = time.time() - _last_request
     if delta < _MIN_INTERVAL:
@@ -181,12 +163,7 @@ def resolve_movie(title: str, year: str | None = None, logger=None):
             # and adopt its year.
             chosen = (exact[0][1], exact[0][2])
 
-    _cache[key] = chosen
-    _cache_dirty = True
-    _save_cache()
+    _cache.put(key, list(chosen) if chosen else None)
     if logger and chosen:
         logger.info("IMDb: '%s (%s)' → '%s (%s)'", title, year or "?", chosen[0], chosen[1])
     return chosen
-
-
-_load_cache()
