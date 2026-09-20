@@ -273,6 +273,30 @@ _RE_INITIAL = re.compile(r"^[A-Za-z]\.?$")
 _RE_POSSESSIVE = re.compile(r"['’]s$", re.IGNORECASE)
 
 
+def _join_initials(name: str) -> str:
+    """Merge runs of consecutive single-letter tokens: "R J Decker" -> "RJ Decker".
+
+    `_clean_show_name` turns dots into spaces, so "R.J.Decker" reaches the
+    lookup as "R J Decker". TVMaze returns 0 results for that and matches both
+    "RJ Decker" and "R.J. Decker" immediately, so without rejoining, every
+    initialled title is unfindable and keeps its unverified, yearless parsed
+    name (CLEAN-17).
+    """
+    out: list[str] = []
+    run: list[str] = []
+    for word in name.split():
+        if len(word) == 1 and word.isalpha():
+            run.append(word)
+            continue
+        if run:
+            out.append("".join(run))
+            run = []
+        out.append(word)
+    if run:
+        out.append("".join(run))
+    return " ".join(out)
+
+
 def _is_author_cruft(prefix_words: list[str]) -> bool:
     """True when a dropped prefix looks like an author/initial credit.
 
@@ -306,6 +330,14 @@ def _query_variants(name: str) -> list[str]:
     stripped = _strip_stopwords(base)
     if stripped and stripped != base and stripped not in variants:
         variants.append(stripped)
+
+    # Rejoin spaced initials. Tried after the full name and the stopword form,
+    # so it can never override a confident full-name match, and before the tail
+    # fallback below, so an initialled title is found by its real name rather
+    # than by a generic suffix.
+    joined = _join_initials(base)
+    if joined != base and joined not in variants:
+        variants.append(joined)
 
     # Last-resort tail fallbacks for long, noisy names where the distinctive
     # title sits at the END after author/initial cruft, e.g.
