@@ -28,6 +28,8 @@ from ..intake_filter import (
     is_season_dir,
     movie_needs_processing,
 )
+from ..lookup_cache import MISS, LookupCache
+from ..name_evidence import candidate_names
 from ..title_signal import (
     RE_RELEASE_LANGUAGE_TAG,
     describe_mismatch,
@@ -148,39 +150,13 @@ def parse_movie_from_string(s: str) -> tuple[str, str] | None:
 # TMDB API Support with Rate Limiting
 # ============================================================================
 
-# Disk cache path — sits next to this file, mirrors the TVMaze cache pattern
+# Disk cache path, sitting next to this file, mirroring the TVMaze cache pattern.
+# A hit keeps forever; a miss expires. The permanent null this cache used to
+# write is what kept "dr who joy to the world" unasked for months. (CLEAN-13)
 _TMDB_CACHE_PATH = Path(__file__).parent / ".tmdb_cache.json"
-
-# In-process cache: query_key → (clean_title, year) | None
-_tmdb_cache: dict[str, tuple[str, str] | None] = {}
+_tmdb_cache = LookupCache(_TMDB_CACHE_PATH)
 _tmdb_last_request: float = 0
 _TMDB_MIN_INTERVAL = 0.25  # 4 requests per second max
-
-
-def _load_tmdb_cache() -> None:
-    """Load the persisted TMDB cache from disk into the in-process cache."""
-    global _tmdb_cache
-    if _TMDB_CACHE_PATH.exists():
-        try:
-            raw = json.loads(_TMDB_CACHE_PATH.read_text(encoding="utf-8"))
-            # Values are stored as [title, year] or null
-            _tmdb_cache = {k: (tuple(v) if v else None) for k, v in raw.items()}
-        except Exception:
-            pass
-
-
-def _save_tmdb_cache() -> None:
-    """Persist the in-process TMDB cache to disk (best-effort)."""
-    try:
-        serializable = {k: list(v) if v else None for k, v in _tmdb_cache.items()}
-        _TMDB_CACHE_PATH.write_text(
-            json.dumps(serializable, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-    except Exception:
-        pass
-
-
-_load_tmdb_cache()
 
 
 def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
@@ -203,10 +179,14 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
     if not REQUESTS_AVAILABLE or not TMDB_API_KEY:
         return None
 
-    # Check cache
+    # Check cache. A live cached miss stops here; an expired one falls through
+    # and gets asked again.
     cache_key = title.lower().strip()
-    if cache_key in _tmdb_cache:
-        return _tmdb_cache[cache_key]
+    cached = _tmdb_cache.get(cache_key)
+    if cached is MISS:
+        return None
+    if cached is not None:
+        return tuple(cached)
 
     # Rate limiting
     elapsed = time.time() - _tmdb_last_request
@@ -232,21 +212,18 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
             if release_date:
                 year = release_date[:4]
                 result = (movie_title, year)
-                _tmdb_cache[cache_key] = result
-                _save_tmdb_cache()
+                _tmdb_cache.put(cache_key, [movie_title, year])
                 if logger:
                     logger.info("TMDB LOOKUP: '%s' -> '%s (%s)'", title, movie_title, year)
                 return result
 
-        _tmdb_cache[cache_key] = None
-        _save_tmdb_cache()
+        _tmdb_cache.put(cache_key, None)
         return None
 
     except Exception as e:
         if logger:
             logger.debug("TMDB lookup failed for '%s': %s", title, e)
-        _tmdb_cache[cache_key] = None
-        _save_tmdb_cache()
+        _tmdb_cache.put(cache_key, None)
         return None
 
 
@@ -444,12 +421,50 @@ class CleanMovieService(BaseCleanService):
             title, year = self._imdb_verify(title, year)
             return title, year
 
-        # If TMDB lookup is enabled and this is a video file, try API
-        if self._use_tmdb_lookup and path.suffix.lower() in VIDEO_EXT:
-            raw_name = Path(path.name).stem
-            clean_name = clean_movie_title(raw_name)
-            return lookup_movie_year(clean_name, self._logger)
+        # The filename and the folder are exhausted. Before concluding that
+        # this file cannot be identified, ask the two sources that were open
+        # all along: what the file calls itself in its own container tags, and
+        # what it arrived as in qBittorrent. A movie without a date goes
+        # looking for one; it does not get ignored. (CLEAN-13)
+        names = candidate_names(
+            path,
+            torrent_name=self._qbit.torrent_name_for(path) if self._qbit else None,
+            logger_=self._logger,
+        )
+        # [1:] because names[0] is the filename stem, which super() just tried.
+        for name in names[1:]:
+            parsed = self.parse_media_info(name)
+            if not parsed:
+                continue
+            title, year = parsed
+            self._logger.info(
+                "IDENTIFIED (evidence ladder): %s -> '%s (%s)' from %r",
+                path.name, title, year, name,
+            )
+            return self._imdb_verify(title, year)
 
+        # Last rung: ask TMDB about every candidate, not just the stem. The
+        # stem is the one that already failed to parse.
+        if self._use_tmdb_lookup and path.suffix.lower() in VIDEO_EXT:
+            for name in names:
+                clean_name = clean_movie_title(name)
+                found = lookup_movie_year(clean_name, self._logger)
+                if found:
+                    self._logger.info(
+                        "IDENTIFIED (TMDB via evidence ladder): %s -> %s from %r",
+                        path.name, found, name,
+                    )
+                    return found
+
+        # Only video files earn a warning. A .DS_Store or a stray .jsonl also
+        # arrives here unparseable, and saying so every run buries the one line
+        # that matters under noise, which is how the original refusal went
+        # unread for three days in the first place.
+        if path.suffix.lower() in VIDEO_EXT:
+            self._logger.warning(
+                "UNIDENTIFIED after %d candidate name(s) (%s): %s",
+                len(names), ", ".join(repr(n) for n in names), path,
+            )
         return None
 
     def _imdb_verify(self, title: str, year: str) -> tuple[str, str]:

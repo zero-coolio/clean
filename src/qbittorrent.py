@@ -210,6 +210,20 @@ class QbitReaper:
             return REMOVED, t
         return ZOMBIE, t
 
+    def torrent_name_for(self, path) -> str | None:
+        """The name of the torrent `path` arrived in, or None if unknown.
+
+        Read-only and policy-free, unlike `decide`: this asks only what the
+        file was called on arrival, which is evidence about its identity, not
+        a judgement about whether it may be moved. Used by the name-evidence
+        ladder when a filename carries no parseable title. (CLEAN-13)
+        """
+        t = find_torrent_for_path(self._torrents, path)
+        if t is None:
+            return None
+        name = t.get("name")
+        return name if isinstance(name, str) and name.strip() else None
+
     def clear_to_move(self, path, commit: bool, journal: list[dict]) -> tuple[bool, str | None]:
         """Apply the policy to a file about to be renamed.
 
