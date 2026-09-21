@@ -16,7 +16,7 @@ from __future__ import annotations
 import datetime
 import logging
 
-from .tvmaze_titles import is_identifying_title
+from .tvmaze_titles import PLACEHOLDER_TITLES, is_identifying_title
 
 _log = logging.getLogger(__name__)
 
@@ -107,12 +107,43 @@ def needs_refresh(
     if not dates:
         return False
 
+    # An episode that has ALREADY aired but still carries a placeholder/empty
+    # title ("TBA") should have a real title by now — re-check even if the show
+    # has forward data (which otherwise short-circuits to "fresh" below). This
+    # is the currently-airing-season blind spot: Slow Horses S6 sat on cached
+    # "TBA" titles TVMaze had since filled in, and the no-forward-data rule never
+    # fired because S6 still had unaired episodes.
+    if _has_aired_placeholder_title(episodes, now):
+        return True
+
     if any(d > now for d in dates):
         # Forward data present — the entry is already doing its job.
         return False
 
     newest = max(dates)
     return (now - newest).days <= window_days
+
+
+def _has_aired_placeholder_title(episodes: list[dict] | None, now: datetime.date) -> bool:
+    """True if any episode that has already aired still has an empty or
+    placeholder ("TBA") title. Positional titles ("Episode 4") are intentionally
+    NOT placeholders here: a show TVMaze never titles would otherwise re-fetch
+    forever. Mirrors lime's `ScheduleFreshness.isPlaceholderTitle`.
+    """
+    for ep in episodes or []:
+        raw = ((ep or {}).get("airdate") or "").strip()
+        if not raw:
+            continue
+        title = ((ep or {}).get("title") or "").strip().lower()
+        if title and title not in PLACEHOLDER_TITLES:
+            continue  # a real title — nothing missing here
+        try:
+            d = datetime.date.fromisoformat(raw[:10])
+        except ValueError:
+            continue
+        if d <= now:
+            return True
+    return False
 
 
 # What fraction of a cached entry's episode titles must survive in a re-fetch
