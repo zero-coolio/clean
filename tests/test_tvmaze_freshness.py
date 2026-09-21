@@ -209,3 +209,39 @@ def test_guard_abstains_when_cached_titles_are_all_positional():
     """All-"Episode N" titles are no evidence at all, not evidence of a mismatch."""
     old = titled("Episode 1", "Episode 2", "Episode 3")
     assert is_plausible_replacement(old, titled("Totally", "Different", "Show")) is True
+
+
+# --- aired-but-still-"TBA" title forces a re-check (Slow Horses S6) ----------
+
+def epT(airdate, title, season=1, episode=1):
+    return {"season": season, "episode": episode, "title": title, "airdate": airdate}
+
+
+def test_aired_placeholder_title_refreshes_despite_forward_data():
+    """An aired episode still titled 'TBA' must trigger a refresh even though a
+    later episode is unaired (forward data), which normally reads as fresh."""
+    episodes = [epT(days_before(4), "TBA"), epT(days_after(7), "Something", episode=2)]
+    assert needs_refresh(episodes, "2026-01-01T00:00:00Z", NOW) is True
+
+
+def test_aired_empty_title_refreshes():
+    episodes = [epT(days_before(4), ""), epT(days_after(7), "Next", episode=2)]
+    assert needs_refresh(episodes, "2026-01-01T00:00:00Z", NOW) is True
+
+
+def test_aired_real_title_with_forward_data_not_stale():
+    episodes = [epT(days_before(4), "Pilot"), epT(days_after(7), "Next", episode=2)]
+    assert needs_refresh(episodes, "2026-01-01T00:00:00Z", NOW) is False
+
+
+def test_unaired_placeholder_title_not_stale():
+    """A 'TBA' title on an episode that hasn't aired yet is normal, not stale."""
+    episodes = [epT(days_after(7), "TBA")]
+    assert needs_refresh(episodes, "2026-01-01T00:00:00Z", NOW) is False
+
+
+def test_positional_title_on_aired_episode_is_not_a_placeholder():
+    """'Episode 4' is a weak real title, not a TBA placeholder; with forward data
+    present it must NOT force a refresh (or such shows re-fetch forever)."""
+    episodes = [epT(days_before(4), "Episode 1"), epT(days_after(7), "Episode 2", episode=2)]
+    assert needs_refresh(episodes, "2026-01-01T00:00:00Z", NOW) is False
