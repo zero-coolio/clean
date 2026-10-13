@@ -30,6 +30,7 @@ from ..intake_filter import (
 )
 from ..lookup_cache import MISS, LookupCache
 from ..name_evidence import candidate_names
+from ..title_match import is_substantive, titles_match
 from ..title_signal import (
     RE_RELEASE_LANGUAGE_TAG,
     describe_mismatch,
@@ -64,18 +65,28 @@ RE_MOVIE_PAREN_YEAR = re.compile(
 )
 
 
-def clean_movie_title(raw_title: str) -> str:
+def clean_movie_title(raw_title: str, full_name: str | None = None) -> str:
     """Clean up a raw movie title.
-    
+
     Converts dots/underscores to spaces, removes quality markers,
     and normalizes whitespace.
-    
+
     Args:
         raw_title: Raw title string from filename.
-        
+        full_name: The whole name `raw_title` was cut out of, when the caller
+            has it. Only the mirrored release-group prefix test needs it: the
+            trailing "-GalaxyRG" tag sits AFTER the year, so it is not in
+            `raw_title` at all and the test cannot see it otherwise. Pass the
+            ORIGINAL string, not `Path(name).stem`: a ladder-sourced name is a
+            container tag rather than a filename, and stem treats its last
+            dotted run as an extension, so "...x264-GalaxyRG" loses the very
+            tag this test looks for. Defaults to `raw_title`, which simply
+            makes the test a no-op.
+
     Returns:
         Cleaned, title-cased movie title.
     """
+    mirror_source = full_name if full_name is not None else raw_title
     # Replace dots and underscores with spaces
     title = re.sub(r"[._]+", " ", raw_title)
     
@@ -105,6 +116,25 @@ def clean_movie_title(raw_title: str) -> str:
         # Series (1992)" and dragging their sidecars along.
         title = re.sub(r"\s{2,}-|-\s{2,}", " ", title)
 
+    # A ZERO-PADDED leading number is a track index from a boxset rip, not part
+    # of the title: "01 The Hobbit An Unexpected Journey" is file 1 of 3. The
+    # zero padding is the whole tell and the reason this is safe. A bare
+    # leading number IS often the title ("13 Assassins", "12 Angry Men",
+    # "300"), so only 0X is stripped, and only when words follow it.
+    # (CLEAN-19)
+    title = re.sub(r"^0\d[\s.\-_]+(?=\S)", "", title)
+
+    # A leading release-group prefix, but only when the SAME tag also closed
+    # the original name: "GalaxyRG - Justice.League...-GalaxyRG" began and
+    # ended with it, which is proof it is the uploader's watermark rather than
+    # part of the title. Without that mirror test this would eat a real leading
+    # word. Checked against raw_title because the trailing tag has already
+    # been stripped from `title` above.
+    lead = re.match(r"^([A-Za-z0-9]{2,})\s*-\s*(?=\S)", title)
+    if lead and re.search(rf"-\s*{re.escape(lead.group(1))}\s*$",
+                          mirror_source, re.IGNORECASE):
+        title = title[lead.end():]
+
     # Normalize whitespace
     title = re.sub(r"\s+", " ", title).strip(" -")
 
@@ -132,17 +162,17 @@ def parse_movie_from_string(s: str) -> tuple[str, str] | None:
     if match:
         raw_title = match.group("title")
         year = match.group("year")
-        title = clean_movie_title(raw_title)
+        title = clean_movie_title(raw_title, s)
         return title, year
-    
+
     # Try dotted/spaced format: "Movie.Name.2024.1080p..."
     match = RE_MOVIE_YEAR.search(name_no_ext)
     if match:
         raw_title = match.group("title")
         year = match.group("year")
-        title = clean_movie_title(raw_title)
+        title = clean_movie_title(raw_title, s)
         return title, year
-    
+
     return None
 
 
@@ -179,6 +209,18 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
     if not REQUESTS_AVAILABLE or not TMDB_API_KEY:
         return None
 
+    # Do not ask a question that cannot identify a film. A search engine handed
+    # "Untitled" or "Extra-1" still answers, confidently and wrongly: those two
+    # came back as "(Untitled) (2009)" and "His Cat: Extra Chapter 1 (2020)",
+    # for files whose own folders already said The Thing and Green Lantern.
+    # (CLEAN-19)
+    if not is_substantive(title):
+        if logger:
+            logger.info(
+                "TMDB SKIP: %r claims no identity of its own, not asking", title
+            )
+        return None
+
     # Check cache. A live cached miss stops here; an expired one falls through
     # and gets asked again.
     cache_key = title.lower().strip()
@@ -186,7 +228,20 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
     if cached is MISS:
         return None
     if cached is not None:
-        return tuple(cached)
+        # Re-check a cached hit against TODAY's gate. The cache predates the
+        # exact-title requirement, so it holds loose matches that were accepted
+        # when nothing compared titles at all: "spider-man" is stored as
+        # "Spider-Man: Brand New Day (2026)". Trusting a hit because it is old
+        # would let every one of those through a gate built to stop them. A
+        # rejected entry falls through and is asked again, which caches the
+        # correct miss, so the cache heals itself. (CLEAN-19)
+        if titles_match(title, cached[0]):
+            return tuple(cached)
+        if logger:
+            logger.info(
+                "TMDB CACHE REJECT: cached %r for %r is not an exact title "
+                "match, re-asking", cached[0], title,
+            )
 
     # Rate limiting
     elapsed = time.time() - _tmdb_last_request
@@ -205,17 +260,31 @@ def lookup_movie_year(title: str, logger=None) -> tuple[str, str] | None:
         response.raise_for_status()
         data = response.json()
 
-        if data.get("results"):
-            movie = data["results"][0]
-            movie_title = movie.get("title", title)
-            release_date = movie.get("release_date", "")
-            if release_date:
-                year = release_date[:4]
-                result = (movie_title, year)
-                _tmdb_cache.put(cache_key, [movie_title, year])
-                if logger:
-                    logger.info("TMDB LOOKUP: '%s' -> '%s (%s)'", title, movie_title, year)
-                return result
+        # The answer must BE the question. results[0] used to be taken on
+        # faith, with no title comparison at all, which is how "spider-man"
+        # became "Spider-Man: Brand New Day (2026)", an unreleased film. IMDb's
+        # path has always required exact-title equality; TMDB's never did.
+        # Scan the page rather than only results[0], so a correct exact match
+        # ranked second is still found. (CLEAN-19)
+        for movie in data.get("results") or []:
+            movie_title = movie.get("title") or ""
+            release_date = movie.get("release_date") or ""
+            if not release_date or not titles_match(title, movie_title):
+                continue
+            year = release_date[:4]
+            result = (movie_title, year)
+            _tmdb_cache.put(cache_key, [movie_title, year])
+            if logger:
+                logger.info("TMDB LOOKUP: '%s' -> '%s (%s)'", title, movie_title, year)
+            return result
+
+        if logger and data.get("results"):
+            logger.info(
+                "TMDB REJECT: '%s' had %d result(s), none an exact title match "
+                "(best was %r)",
+                title, len(data["results"]),
+                (data["results"][0].get("title") or "?"),
+            )
 
         _tmdb_cache.put(cache_key, None)
         return None
