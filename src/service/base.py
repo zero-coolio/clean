@@ -421,9 +421,12 @@ class BaseCleanService(ABC):
             
             # Destination conflict with DIFFERENT content (the same_content
             # branch above already handled byte-identical duplicates). The
-            # survivor is chosen by `conflict_policy.choose_winner`: higher
-            # resolution first, then newer, then larger. The loser is trashed,
-            # not unlinked, so a wrong call is recoverable from the Trash.
+            # survivor is chosen by `conflict_policy.choose_winner`: NEWER
+            # first, then larger (CLEAN-20, reversing CLEAN-2). The loser is
+            # trashed, not unlinked, so a wrong call is recoverable from the
+            # Trash. Resolution no longer decides, so a newer-but-worse release
+            # now wins; `decision.is_downgrade` says when that happened and it
+            # is reported so the loss is never silent.
             #
             # Note what this branch is. "Same destination" does not imply "same
             # episode" — only that the two resolved the same way. When
@@ -443,15 +446,25 @@ class BaseCleanService(ABC):
                     Candidate(video_height(dest, self._logger),
                               dst_stat.st_mtime, dst_stat.st_size),
                 )
+                # A downgrade is the known cost of recency-wins. Say so on its
+                # own line and put it in the run summary, so trading picture
+                # quality for a later mtime is always visible after the fact.
+                if decision.is_downgrade:
+                    self._logger.warning(
+                        "QUALITY DOWNGRADE: %s keeps the lower-resolution file: %s",
+                        decision.reason, dest,
+                    )
+                    unexpected.append(f"{dest} (quality downgrade: {decision.reason})")
+
                 if decision.winner == "source":
                     self._logger.warning(
-                        "CONFLICT: %s — trashing dest and replacing (%d vs %d bytes): %s",
+                        "CONFLICT: %s, trashing dest and replacing (%d vs %d bytes): %s",
                         decision.reason, src_stat.st_size, dst_stat.st_size, dest,
                     )
                     safe_delete(dest, commit, journal, self._logger)
                 else:
                     self._logger.warning(
-                        "CONFLICT: %s — keeping dest, trashing source (%d vs %d bytes): %s",
+                        "CONFLICT: %s, keeping dest, trashing source (%d vs %d bytes): %s",
                         decision.reason, dst_stat.st_size, src_stat.st_size, path,
                     )
                     safe_delete(path, commit, journal, self._logger)
