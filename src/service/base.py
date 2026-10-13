@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES
 from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
-from ..conflict_policy import Candidate, choose_winner
+from ..conflict_policy import Candidate, ConflictRule, choose_winner
 from ..qbittorrent import QbitReaper
 from ..video_probe import video_height
 from ..utils import (
@@ -37,6 +37,12 @@ class BaseCleanService(ABC):
     
     # Subclasses should set this
     SERVICE_NAME = "clean"
+
+    # Which library's conflict rule this service uses. QUALITY is the default
+    # because it is the conservative one: a service that forgets to declare
+    # cannot silently trade picture quality for a later mtime. TV overrides it.
+    # See conflict_policy and CLEAN-21.
+    CONFLICT_RULE = ConflictRule.QUALITY
     
     def __init__(self, logger: Logger) -> None:
         """Initialize the service.
@@ -421,12 +427,12 @@ class BaseCleanService(ABC):
             
             # Destination conflict with DIFFERENT content (the same_content
             # branch above already handled byte-identical duplicates). The
-            # survivor is chosen by `conflict_policy.choose_winner`: NEWER
-            # first, then larger (CLEAN-20, reversing CLEAN-2). The loser is
-            # trashed, not unlinked, so a wrong call is recoverable from the
-            # Trash. Resolution no longer decides, so a newer-but-worse release
-            # now wins; `decision.is_downgrade` says when that happened and it
-            # is reported so the loss is never silent.
+            # survivor is chosen by `conflict_policy.choose_winner` under THIS
+            # service's CONFLICT_RULE: newest for TV, highest quality for
+            # movies (CLEAN-21). The loser is trashed, not unlinked, so a wrong
+            # call is recoverable from the Trash. Under the TV rule a
+            # newer-but-worse release wins, and `decision.is_downgrade` says so
+            # loudly, because that loss must never be silent.
             #
             # Note what this branch is. "Same destination" does not imply "same
             # episode" — only that the two resolved the same way. When
@@ -445,6 +451,7 @@ class BaseCleanService(ABC):
                               src_stat.st_mtime, src_stat.st_size),
                     Candidate(video_height(dest, self._logger),
                               dst_stat.st_mtime, dst_stat.st_size),
+                    self.CONFLICT_RULE,
                 )
                 # A downgrade is the known cost of recency-wins. Say so on its
                 # own line and put it in the run summary, so trading picture

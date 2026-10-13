@@ -5,25 +5,33 @@ stats, this decides, the caller acts. Keeping it separate is what makes the rule
 testable without building a library on disk, and this is the rule that deletes
 things, so it is the one most worth testing.
 
-THE RULE (Steve, 2026-10-13, CLEAN-20): the latest version of an episode
-replaces the older one.
+THE RULE IS PER LIBRARY (Steve, 2026-10-13, CLEAN-21): "for movies keep the
+higher quality, newest applies only to tv".
 
-1. **Newer wins.** A later mtime is taken as a later release, and a later
-   release is the one to keep.
-2. **Then larger wins**, the historical tiebreak for identical mtimes.
+    ConflictRule.NEWEST   (TV)      newer -> larger -> incumbent
+    ConflictRule.QUALITY  (movies)  resolution -> newer -> larger -> incumbent
 
-Resolution does not decide anything. It is still probed, and it still appears
-in the reason string, for one purpose: so that a swap which LOSES picture
-quality says so in the log instead of happening quietly. `is_downgrade` marks
-those, and the caller raises them to WARNING.
+That difference is not a compromise between CLEAN-2 and CLEAN-20; both were
+right about their own library, which is why each kept producing a case that
+embarrassed the other.
 
-This reverses CLEAN-2 (27b5a8c, 2026-09-16), which made resolution the primary
-key after a full-library preview found 23 of 42 conflicts resolving in favour
-of the smaller file: a 188 MB rip evicting a 697 MB one across all eight
-IT - Welcome to Derry episodes, 201 MB evicting 1.6 GB on Mitchell & Webb,
-9.7 GB of net loss. That cost is known and accepted; recency is the rule Steve
-wants and the one that held for months before CLEAN-2. The downgrade flag
-exists so the cost is observable rather than invisible.
+A second copy of a TV EPISODE is almost always a re-release of the same
+broadcast: a fixed sync, a corrected audio track, a proper encode. Later means
+better, so recency decides. This is also the rule that held for months before
+CLEAN-2.
+
+A second copy of a MOVIE is almost always a different rip of different quality,
+arriving in whatever order the trackers happened to seed it. Recency there
+means nothing at all, and following it cost real data: a full-library preview
+on 2026-09-16 found 23 of 42 conflicts resolving in favour of the SMALLER file,
+a 188 MB rip evicting a 697 MB one across all eight IT - Welcome to Derry
+episodes, 201 MB evicting 1.6 GB on Mitchell & Webb, 9.7 GB of net loss.
+
+Under NEWEST, resolution is still probed and still appears in the reason, for
+one purpose: so a swap that LOSES picture quality says so instead of happening
+quietly. `is_downgrade` marks those and the caller raises them to WARNING.
+Under QUALITY a resolution downgrade cannot occur, because resolution is what
+decides.
 
 CAVEAT worth knowing: mtime is a weak proxy for release order in both
 directions. A move preserves it, so "newer" can mean "copied later" rather than
@@ -32,9 +40,17 @@ release that superseded it.
 """
 from __future__ import annotations
 
+from enum import Enum
 from typing import Literal, NamedTuple
 
 Winner = Literal["source", "dest"]
+
+
+class ConflictRule(Enum):
+    """Which library's rule to apply. Services declare theirs; see CLEAN-21."""
+
+    NEWEST = "newest"    # TV: a later episode file is a later release
+    QUALITY = "quality"  # movies: a bigger picture beats an earlier arrival
 
 
 class Candidate(NamedTuple):
@@ -60,18 +76,42 @@ def _downgrade(winner: Candidate, loser: Candidate) -> bool:
     return bool(winner.height and loser.height and winner.height < loser.height)
 
 
-def choose_winner(source: Candidate, dest: Candidate) -> Decision:
+def choose_winner(
+    source: Candidate,
+    dest: Candidate,
+    rule: ConflictRule = ConflictRule.QUALITY,
+) -> Decision:
     """Pick the survivor of a same-destination conflict between two files.
 
     Args:
         source: The incoming file being filed.
         dest: The file already sitting at the destination.
+        rule: Which library's rule to apply. Defaults to QUALITY, the
+            conservative one: a caller that forgets to say cannot silently
+            trade picture quality away.
 
     Returns:
         Decision(winner, reason, is_downgrade). `winner` names which candidate
         to keep; `is_downgrade` says the survivor is lower resolution than the
         file being discarded, which the caller must log loudly.
     """
+    if (
+        rule is ConflictRule.QUALITY
+        and source.height and dest.height
+        and source.height != dest.height
+    ):
+        if source.height > dest.height:
+            return Decision(
+                "source",
+                f"source is higher resolution ({source.height}p > {dest.height}p)",
+                False,
+            )
+        return Decision(
+            "dest",
+            f"dest is higher resolution ({dest.height}p > {source.height}p)",
+            False,
+        )
+
     if source.mtime != dest.mtime:
         if source.mtime > dest.mtime:
             winner, loser, label = source, dest, ("source", "source is newer")
