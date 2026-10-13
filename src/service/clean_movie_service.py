@@ -28,6 +28,7 @@ from ..intake_filter import (
     is_season_dir,
     movie_needs_processing,
 )
+from ..conflict_policy import ConflictRule
 from ..lookup_cache import MISS, LookupCache
 from ..name_evidence import candidate_names
 from ..title_match import is_substantive, titles_match
@@ -312,6 +313,13 @@ class CleanMovieService(BaseCleanService):
     """Service to clean and organize movie files."""
 
     SERVICE_NAME = "clean-movie"
+
+    # A second copy of a MOVIE is almost always a different rip of different
+    # quality, arriving in whatever order a tracker happened to seed it, so
+    # recency means nothing. Stated explicitly rather than inherited: this is
+    # the rule Steve asked for by library, not a default worth leaving implicit.
+    # (CLEAN-21)
+    CONFLICT_RULE = ConflictRule.QUALITY
 
     def _needs_processing(self, rel_path) -> bool:
         """Structural work selection for the movie layout. See intake_filter."""

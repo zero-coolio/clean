@@ -14,6 +14,7 @@ from typing import NamedTuple
 from ..config import VIDEO_EXT, JUNK_EXT, TV_SIDECAR_EXT, get_logger
 from ..utils import normalize_unicode_separators, strip_noise_prefix, title_case
 from ..intake_filter import tv_needs_processing
+from ..conflict_policy import ConflictRule
 from .base import BaseCleanService
 
 # Show-level rename hint: "Old Show Name==New Show Name"
@@ -371,6 +372,11 @@ class CleanService(BaseCleanService):
     """Service to clean and organize TV show files."""
 
     SERVICE_NAME = "clean-tv"
+
+    # A second copy of an EPISODE is almost always a re-release of the same
+    # broadcast: a fixed sync, a corrected audio track, a better encode. Later
+    # means better here, so recency decides. (CLEAN-21)
+    CONFLICT_RULE = ConflictRule.NEWEST
 
     def _needs_processing(self, rel_path) -> bool:
         """Structural work selection for the TV layout. See intake_filter."""
