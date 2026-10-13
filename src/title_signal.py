@@ -37,6 +37,7 @@ from __future__ import annotations
 import re
 
 from .config import QUALITY_MARKERS
+from .title_match import PLACEHOLDER_WORDS
 
 # Words that carry no identity, so their presence or absence proves nothing.
 # Stopwords matter more than they look: "Dr Who Joy To The World" and "Eater's
@@ -49,10 +50,16 @@ _STOPWORDS = frozenset({
 
 # Generic placeholder names a release uses for its payload. A stem made only of
 # these is saying nothing, which is exactly when the folder SHOULD name it.
+# CLEAN-19: unioned with title_match.PLACEHOLDER_WORDS rather than restated,
+# so "the stem says nothing" means one thing in this codebase. That set is what
+# teaches this comparison that "Untitled.m4v" inside "The Thing (1982)" and
+# "Extra-1.mkv" inside a Green Lantern folder claim no identity of their own,
+# and so should be named by the folder that does know, not shipped off to TMDB
+# where they matched "(Untitled) (2009)" and "His Cat: Extra Chapter 1 (2020)".
 _GENERIC = frozenset({
     "movie", "film", "video", "title", "main", "feature", "movies",
     "vts", "vob", "disc", "disk", "cd", "cd1", "cd2", "dvd", "bluray",
-})
+}) | PLACEHOLDER_WORDS
 
 # Sidecar language names, for the same reason: "Subs/2_English.srt" is a
 # subtitle track, not a claim to be a film called "English".

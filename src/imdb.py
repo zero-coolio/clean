@@ -29,6 +29,8 @@ import urllib.request
 from pathlib import Path
 
 from .lookup_cache import MISS, LookupCache
+from .title_match import normalize as _normalize
+from .title_match import normalize_keep_article as _normalize_keep_article
 
 # Persisted, so repeat runs don't re-hit IMDb. Sits next to the other caches.
 # A hit keeps forever; a miss expires, so one bad day at IMDb does not freeze a
@@ -43,29 +45,6 @@ _MIN_INTERVAL = 0.34   # be polite to the endpoint
 # tvMiniSeries, tvEpisode, tvSpecial, short, musicVideo, videoGame, ...) is
 # rejected so a movie can never be renamed onto a TV title.
 _MOVIE_TYPES = {"movie", "tvMovie", "video"}
-
-_RE_ARTICLE = re.compile(r"^(the|a|an)\s+")
-
-
-def _normalize_keep_article(title: str) -> str:
-    """Lowercase, fold '&'->'and', drop punctuation. Keeps a leading article."""
-    t = title.lower().replace("&", " and ")
-    t = re.sub(r"[^a-z0-9 ]", " ", t)
-    return re.sub(r"\s+", " ", t).strip()
-
-
-def _normalize(title: str) -> str:
-    """Lowercase, fold '&'->'and', drop punctuation, strip a leading article.
-
-    Article-insensitive on purpose: a release named "Matrix.1999.mkv" should
-    still resolve to "The Matrix". But an article is not always noise, and two
-    real films can differ by one ("State of Grace" 1990 and "A State of Grace"
-    2000), so callers must not treat a match here as proof of identity on its
-    own. See resolve_movie, which demands an exact year when the articles
-    disagree.
-    """
-    return _RE_ARTICLE.sub("", _normalize_keep_article(title))
-
 
 def _fetch(title: str) -> list[dict]:
     """Return IMDb suggestion entries for a title (empty on any error)."""
