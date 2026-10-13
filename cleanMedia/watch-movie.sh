@@ -28,7 +28,25 @@ if [ -f "$ENV_FILE" ]; then
     . "$ENV_FILE"
     set +a
 fi
-WATCH_DIR="${CLEAN_MOVIE_DIR:-/Volumes/Seagate/seagate-movie}"
+# Library roots, newline-separated. CLEAN_MOVIE_DIRS wins; CLEAN_MOVIE_DIR is
+# still honoured so an existing install keeps working unchanged. Each root is
+# organized IN PLACE within itself; this is not a merge (CLEAN-18).
+#
+# A root on a volume that is not mounted is SKIPPED by src.library_roots, not
+# treated as an empty library, so an unplugged archive costs nothing. That is
+# also why the plist's KeepAlive PathState still gates on /Volumes/Seagate
+# alone: adding a second path there would AND them, and the watcher would stop
+# running whenever either drive was absent.
+if [ -n "${CLEAN_MOVIE_DIRS:-}" ]; then
+    WATCH_DIRS="$CLEAN_MOVIE_DIRS"
+else
+    WATCH_DIRS="${CLEAN_MOVIE_DIR:-/Volumes/Seagate/seagate-movie
+/Volumes/Summer/movie-archive}"
+fi
+# The first existing root, used for the single-path startup sanity check.
+WATCH_DIR="$(printf '%s\n' "$WATCH_DIRS" | while read -r d; do
+    [ -n "$d" ] && [ -d "$d" ] && printf '%s' "$d" && break
+done)"
 LOG_FILE="$SCRIPT_DIR/../logs/watch-movie.log"
 LOCK_FILE="$SCRIPT_DIR/../logs/.watch-movie.lock"
 PENDING_FILE="$SCRIPT_DIR/../logs/.watch-movie-pending.txt"
@@ -134,7 +152,13 @@ run_clean() {
     export PYTHONPATH="$SCRIPT_DIR/.."
     
     # Build command with optional TMDB lookup
-    CMD="python3 -m src.MovieMain --directory \"$WATCH_DIR\" --commit $select_flag"
+    # One --directory per configured root. src.MovieMain vets them and skips
+    # any whose volume is absent, reporting the reason.
+    local dir_args=""
+    while read -r d; do
+        [ -n "$d" ] && dir_args="$dir_args --directory \"$d\""
+    done <<< "$WATCH_DIRS"
+    CMD="python3 -m src.MovieMain$dir_args --commit $select_flag"
     if [ -n "$TMDB_API_KEY" ]; then
         CMD="$CMD --lookup"
     fi
@@ -161,10 +185,14 @@ if ! command -v fswatch &> /dev/null; then
     exit 1
 fi
 
-# Check if watch directory exists
-if [ ! -d "$WATCH_DIR" ]; then
-    log "ERROR: Watch directory does not exist: $WATCH_DIR"
-    log "Is the Seagate drive mounted?"
+# Fail only when NOT ONE root is present. A single missing archive is normal
+# and is reported per-root by src.library_roots.
+if [ -z "$WATCH_DIR" ]; then
+    log "ERROR: none of the configured library roots exist:"
+    printf '%s\n' "$WATCH_DIRS" | while read -r d; do
+        [ -n "$d" ] && log "  missing: $d"
+    done
+    log "Are the drives mounted?"
     exit 1
 fi
 
@@ -179,7 +207,18 @@ fi
 log "========================================"
 log "Clean-Movie Watcher Starting"
 log "========================================"
-log "Watching: $WATCH_DIR"
+# An ARRAY, not a quoted string: a library path may contain spaces, and
+# word-splitting a string of quoted paths (or eval-ing it) gets that wrong.
+FSWATCH_PATHS=()
+while read -r d; do
+    if [ -z "$d" ]; then continue; fi
+    if [ -d "$d" ]; then
+        log "Watching: $d"
+        FSWATCH_PATHS+=("$d")
+    else
+        log "Watching: $d  (SKIPPED, not mounted)"
+    fi
+done <<< "$WATCH_DIRS"
 log "Debounce: ${DEBOUNCE_SECONDS}s"
 log "Log file: $LOG_FILE"
 if [ -n "$TMDB_API_KEY" ]; then
@@ -200,7 +239,7 @@ fswatch -r -L \
     --exclude '\.jsonl$' \
     --exclude '\.DS_Store$' \
     --event Created --event Updated --event MovedTo --event Renamed \
-    "$WATCH_DIR" | while read -r file; do
+    "${FSWATCH_PATHS[@]}" | while read -r file; do
     log "Change detected: $file"
     echo "$file" >> "$PENDING_FILE"
     # Coalesce a burst until quiet for SETTLE_SECONDS, then run once.
