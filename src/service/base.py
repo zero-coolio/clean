@@ -14,6 +14,7 @@ from pathlib import Path
 from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES
 from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
 from ..conflict_policy import Candidate, ConflictRule, choose_winner
+from ..part_marker import part_number
 from ..qbittorrent import QbitReaper
 from ..video_probe import video_height
 from ..utils import (
@@ -55,6 +56,8 @@ class BaseCleanService(ABC):
         # Built once per run() — see _make_qbit_reaper. None when qBittorrent
         # integration is disabled or the client is unreachable.
         self._qbit: QbitReaper | None = None
+        # See _incumbent_for (CLEAN-22). Rebuilt per run().
+        self._claimed: dict[Path, tuple[Candidate, Path]] = {}
     
     # =========================================================================
     # Abstract methods - subclasses must implement
@@ -391,13 +394,23 @@ class BaseCleanService(ABC):
         sidecar_exts = self.get_sidecar_extensions()
 
         if ext in video_exts or ext in sidecar_exts:
-            # Filter non-English subtitles in release folders
-            if ext in sidecar_exts and self._is_in_release_context(path):
-                if not is_english_subtitle(name):
-                    self._logger.info("DELETE NON-ENGLISH SUBTITLE: %s", path)
-                    safe_delete(path, commit, journal, self._logger)
-                    unexpected.append(f"{path} (non-English subtitle)")
-                    return
+            # Discard a non-English subtitle WHEREVER it is found (CLEAN-24).
+            # This used to be gated on _is_in_release_context, so one sitting
+            # loose in an already-organized folder was filed instead. Several
+            # then targeted the same destination name and destroyed each other:
+            # on Jungle Cruise a 4,290 byte file replaced a 111,510 byte one
+            # because collision order decided, not content. Steve does not want
+            # these kept, so discarding them early removes both the clutter and
+            # the collisions, since the colliding files stop existing first.
+            #
+            # is_english_subtitle returns True for an UNTAGGED file, so a plain
+            # "movie.srt" is treated as English and kept. Only a positively
+            # identified foreign tag is discarded, which is the safe direction.
+            if ext in sidecar_exts and not is_english_subtitle(name):
+                self._logger.info("DELETE NON-ENGLISH SUBTITLE: %s", path)
+                safe_delete(path, commit, journal, self._logger)
+                unexpected.append(f"{path} (non-English subtitle)")
+                return
 
             if not parsed:
                 self._logger.warning("SKIP (unparsed media): %s", path)
@@ -443,36 +456,63 @@ class BaseCleanService(ABC):
             # 27 distinct episodes died here. Root causes are guarded elsewhere
             # (`_PLACEHOLDER_SHOW_NAMES`, `_canonical_show`), but this stays the
             # blast-radius multiplier for any future resolution bug. Log loudly.
-            if dest.exists():
+            incumbent = self._incumbent_for(dest)
+            if incumbent is not None:
+                dst_cand, dst_path = incumbent
+                # A file claiming to be one PART of a work must never be
+                # resolved by a rule built to choose between two copies of the
+                # same thing. Red Dwarf: The Promised Land shipped in two
+                # parts, both parsed to one destination, and 625 MB of a 1.3 GB
+                # feature was trashed with a log line that read like routine
+                # housekeeping. Every signal the rule inspects said
+                # "duplicate": same title, year, resolution, similar size.
+                #
+                # Only the ARRIVING file can be asked. By now the first part
+                # has been renamed to "Title (Year).mkv" and its own marker is
+                # gone, so the incumbent cannot answer. A byte-identical
+                # duplicate was already handled above, so reaching here with a
+                # part marker means genuinely different content. Refuse, report,
+                # leave it alone: that loses nothing, where guessing lost half
+                # a film. (CLEAN-23)
+                src_part = part_number(path.name)
+                if src_part is not None:
+                    self._logger.warning(
+                        "REFUSE PART COLLISION: %s claims part %d and %s is "
+                        "already occupied; these may be different parts of one "
+                        "work, not duplicates. Left in place.",
+                        path, src_part, dest,
+                    )
+                    unexpected.append(
+                        f"{path} (claims part {src_part}, destination occupied)"
+                    )
+                    return
+
                 src_stat = path.stat()
-                dst_stat = dest.stat()
-                decision = choose_winner(
-                    Candidate(video_height(path, self._logger),
-                              src_stat.st_mtime, src_stat.st_size),
-                    Candidate(video_height(dest, self._logger),
-                              dst_stat.st_mtime, dst_stat.st_size),
-                    self.CONFLICT_RULE,
-                )
+                src_cand = Candidate(video_height(path, self._logger),
+                                     src_stat.st_mtime, src_stat.st_size)
+                decision = choose_winner(src_cand, dst_cand, self.CONFLICT_RULE)
                 # A downgrade is the known cost of recency-wins. Say so on its
                 # own line and put it in the run summary, so trading picture
                 # quality for a later mtime is always visible after the fact.
                 if decision.is_downgrade:
                     self._logger.warning(
                         "QUALITY DOWNGRADE: %s keeps the lower-resolution file: %s",
-                        decision.reason, dest,
+                        decision.reason, dst_path,
                     )
-                    unexpected.append(f"{dest} (quality downgrade: {decision.reason})")
+                    unexpected.append(
+                        f"{dst_path} (quality downgrade: {decision.reason})"
+                    )
 
                 if decision.winner == "source":
                     self._logger.warning(
                         "CONFLICT: %s, trashing dest and replacing (%d vs %d bytes): %s",
-                        decision.reason, src_stat.st_size, dst_stat.st_size, dest,
+                        decision.reason, src_cand.size, dst_cand.size, dst_path,
                     )
-                    safe_delete(dest, commit, journal, self._logger)
+                    safe_delete(dst_path, commit, journal, self._logger)
                 else:
                     self._logger.warning(
                         "CONFLICT: %s, keeping dest, trashing source (%d vs %d bytes): %s",
-                        decision.reason, dst_stat.st_size, src_stat.st_size, path,
+                        decision.reason, dst_cand.size, src_cand.size, path,
                     )
                     safe_delete(path, commit, journal, self._logger)
                     return
@@ -490,6 +530,11 @@ class BaseCleanService(ABC):
             self._logger.info("MOVE: %s -> %s", path, dest)
             if not self.is_clean_folder_name(path.parent.name):
                 self.track_folder(path.parent)
+            # Record the claim BEFORE moving, so a dry run (where the move does
+            # not happen) still knows this destination is taken. In commit mode
+            # the file really lands there and dest.exists() answers first, so
+            # this map is simply unused. (CLEAN-22)
+            self._claim(dest, path)
             safe_move(path, dest, commit, journal, self._logger)
             return
         
@@ -554,6 +599,44 @@ class BaseCleanService(ABC):
         """
         return True
     
+    def _incumbent_for(self, dest: Path) -> "tuple[Candidate, Path] | None":
+        """Whatever already holds `dest`, on disk or claimed earlier this run.
+
+        A dry run moves nothing, so when two source files both resolve to one
+        destination the second used to find it empty and no conflict was
+        reported. The preview therefore under-counted every delete of that
+        kind: on the 2026-10-13 archive sweep it said 2 conflicts and the
+        commit run performed 48. A preview that under-reports deletions is
+        worse than no preview, because it is trusted. (CLEAN-22)
+
+        Args:
+            dest: The destination being claimed.
+
+        Returns:
+            `(candidate, path)` for the current holder, or None when the
+            destination is genuinely free. `path` is where the holder actually
+            lives right now: the destination itself once a real file is there,
+            or the earlier SOURCE file during a dry run.
+        """
+        if dest.exists():
+            st = dest.stat()
+            return (
+                Candidate(video_height(dest, self._logger), st.st_mtime, st.st_size),
+                dest,
+            )
+        return self._claimed.get(dest)
+
+    def _claim(self, dest: Path, source: Path) -> None:
+        """Note that `source` is taking `dest`, for _incumbent_for. (CLEAN-22)"""
+        try:
+            st = source.stat()
+        except OSError:
+            return
+        self._claimed[dest] = (
+            Candidate(video_height(source, self._logger), st.st_mtime, st.st_size),
+            source,
+        )
+
     def _is_in_release_context(self, path: Path) -> bool:
         """Check if a file is in a release folder context.
         
@@ -637,6 +720,9 @@ class BaseCleanService(ABC):
 
         # qBittorrent remove-before-rename: build the reaper once per run (one
         # torrents/info fetch), not once per file. None if disabled/unreachable.
+        # Destinations claimed EARLIER IN THIS RUN, so a dry run can see a
+        # conflict between two arrivals. See _incumbent_for. (CLEAN-22)
+        self._claimed: dict[Path, tuple[Candidate, Path]] = {}
         self._qbit = self._make_qbit_reaper()
 
         # Pre-run hook (e.g. folder rename hints)
