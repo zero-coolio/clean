@@ -98,3 +98,15 @@ def _disable_qbittorrent(monkeypatch):
     with a fake client (see test_qbittorrent.py).
     """
     monkeypatch.setattr("src.config.QBIT_ENABLED", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_leftover_downloaded_marks():
+    """CLEAN-25: downloaded_marks buffers marks and flushes them at interpreter
+    exit. By then the shared-cache path above has been restored to the REAL
+    file, so any mark a commit-mode test left buffered would be written into
+    the real cache lime reads. Clear the buffer around every test."""
+    from src import downloaded_marks
+    downloaded_marks._pending.clear()
+    yield
+    downloaded_marks._pending.clear()
