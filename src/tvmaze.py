@@ -371,7 +371,11 @@ def _query_variants(name: str) -> list[str]:
     return variants
 
 
-def _search(query: str) -> list[dict]:
+def _search(query: str) -> list[dict] | None:
+    """TVMaze show search. [] = TVMaze answered with no hits; None = the
+    request itself failed (network, TLS, DNS, bad JSON). Callers must not
+    treat None as "no such show": that used to cache a network blip as a
+    permanent no-match."""
     _rate_limit()
     encoded = urllib.parse.quote(query)
     url = f"https://api.tvmaze.com/search/shows?q={encoded}"
@@ -379,8 +383,8 @@ def _search(query: str) -> list[dict]:
         with urllib.request.urlopen(url, timeout=5) as resp:
             return json.loads(resp.read())
     except Exception as e:
-        _log.debug("TVMaze: search failed for %r: %s", query, e)
-        return []
+        _log.warning("TVMaze: search request failed for %r: %s", query, e)
+        return None
 
 
 def _sanitize_name(name: str) -> str:
@@ -471,8 +475,12 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
     year = year_m.group(1) if year_m else None
 
     global _cache_dirty, _id_cache_dirty
+    unreachable = False
     for query in _query_variants(name):
         results = _search(query)
+        if results is None:
+            unreachable = True
+            continue
         match = _best_match(results, year)
         if match:
             sid, canonical, found_year = match
@@ -487,6 +495,16 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
             if logger:
                 logger.info("TVMaze: '%s' → '%s (%s)' (query: '%s')", name, canonical, found_year, query)
             return result
+
+    if unreachable:
+        # At least one query never got an answer, so "no match" isn't known.
+        # Don't cache it: the next run retries instead of trusting a blip.
+        msg = "TVMaze: could not reach TVMaze while looking up '%s'; not caching, will retry next run"
+        if logger:
+            logger.warning(msg, name)
+        else:
+            _log.warning(msg, name)
+        return None
 
     if logger:
         if year:
@@ -525,7 +543,7 @@ def _resolve_show_id(name: str, logger=None) -> int | None:
     year_m = _RE_YEAR.search(name)
     year = year_m.group(1) if year_m else None
     for query in _query_variants(name):
-        match = _best_match(_search(query), year)
+        match = _best_match(_search(query) or [], year)
         if match:
             _id_cache[cache_key] = match[0]
             _id_cache_dirty = True
