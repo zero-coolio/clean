@@ -680,6 +680,16 @@ class CleanService(BaseCleanService):
             "match — keeping as-is", show, season, episode, len(ordered))
         return season, episode
 
+    def _note_in_library(self, parsed: tuple, commit: bool) -> None:
+        """Mark this episode as downloaded in the shared TVMaze cache, so lime
+        can tell "deleted after watching" from "never downloaded" (CLEAN-25).
+        Commit mode only: a dry run must not write the cache."""
+        if not commit:
+            return
+        from ..downloaded_marks import mark
+        show, season, episode = parsed[0], parsed[1], parsed[2]
+        mark(show, season, episode)
+
     def _episode_title(self, show: str, season: str, episode: str) -> str:
         """Best-effort episode title from TVMaze; "" if unavailable."""
         try:

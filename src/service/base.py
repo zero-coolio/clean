@@ -298,6 +298,12 @@ class BaseCleanService(ABC):
         else:
             self._logger.info("All non-clean folders were successfully deleted.")
     
+    def _note_in_library(self, parsed: tuple, commit: bool) -> None:
+        """Hook: a video for `parsed` is now in the library (filed, already in
+        place, or a duplicate/conflict where the library copy stays). No-op
+        here; the TV service records it in the shared cache (CLEAN-25)."""
+        return None
+
     def undo(self, journal_path: Path) -> None:
         """Undo operations from a journal file.
         
@@ -427,15 +433,21 @@ class BaseCleanService(ABC):
             if commit:
                 dest.parent.mkdir(parents=True, exist_ok=True)
 
+            is_video = ext in video_exts
+
             # Already in correct location
             if same_path(path, dest):
                 self._logger.info("OK (already placed): %s", path)
+                if is_video:
+                    self._note_in_library(parsed, commit)
                 return
             
             # Handle duplicates
             if dest.exists() and same_content(path, dest, self._logger):
                 self._logger.info("DUPLICATE: %s matches %s — deleting source", path, dest)
                 safe_delete(path, commit, journal, self._logger)
+                if is_video:
+                    self._note_in_library(parsed, commit)
                 return
             
             # Destination conflict with DIFFERENT content (the same_content
@@ -515,6 +527,8 @@ class BaseCleanService(ABC):
                         decision.reason, dst_cand.size, src_cand.size, path,
                     )
                     safe_delete(path, commit, journal, self._logger)
+                    if is_video:
+                        self._note_in_library(parsed, commit)
                     return
 
             # qBittorrent: remove a completed torrent (keeping its data) before
@@ -536,6 +550,8 @@ class BaseCleanService(ABC):
             # this map is simply unused. (CLEAN-22)
             self._claim(dest, path)
             safe_move(path, dest, commit, journal, self._logger)
+            if is_video:
+                self._note_in_library(parsed, commit)
             return
         
         # Unknown file in a release folder - delete it

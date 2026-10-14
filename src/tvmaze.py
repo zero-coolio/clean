@@ -608,6 +608,11 @@ def _fetch_and_store_episodes(
         )
         return None
 
+    # Keep per-episode "was in the library" marks across the refetch (CLEAN-25):
+    # the API rebuilds every episode dict and knows nothing about downloads.
+    from .downloaded_marks import carry_over
+    previous = replaces if replaces is not None else (_load_episodes_cache().get(key) or {}).get("episodes")
+    episodes = carry_over(previous, episodes)
     fetched_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     _save_episodes_cache({key: {"episodes": episodes, "fetchedAt": fetched_at}})
     if logger:
