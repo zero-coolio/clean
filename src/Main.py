@@ -44,6 +44,11 @@ def main() -> None:
         since_seconds=since_seconds,
         structural=args.structural,
     )
+    # Write this run's downloadedAt marks now, through the run's logger, so
+    # the count lands in watch-tv.log (the exit-time flush logs nowhere
+    # useful). CLEAN-25.
+    from src.downloaded_marks import flush
+    flush(logger=service._logger)
 
 
 if __name__ == "__main__":
