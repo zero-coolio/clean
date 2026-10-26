@@ -169,6 +169,21 @@ QBIT_USER = os.environ.get("QBIT_USER") or None
 QBIT_PASS = os.environ.get("QBIT_PASS") or None
 QBIT_TIMEOUT = float(os.environ.get("QBIT_TIMEOUT", "5"))
 
+# Plex rescan notification (see src/plex.py). Self-gating: with no PLEX_TOKEN
+# the notification is a no-op, exactly as TMDB lookup is without TMDB_API_KEY,
+# so this costs nothing until a token is put in the gitignored cleanMedia/.env.
+# launchd does not read a shell profile, so exporting it in ~/.zprofile will
+# NOT reach the watcher (see CLEAN-6).
+PLEX_TOKEN = os.environ.get("PLEX_TOKEN") or None
+PLEX_BASE_URL = os.environ.get("PLEX_BASE_URL", "http://127.0.0.1:32400")
+PLEX_TIMEOUT = float(os.environ.get("PLEX_TIMEOUT", "5"))
+# Whole-pass ceiling. A notification is a courtesy to Plex and must never hold
+# up, or appear to hang, a run that has already finished moving files.
+PLEX_NOTIFY_BUDGET = float(os.environ.get("PLEX_NOTIFY_BUDGET", "20"))
+# Past this many touched directories in one section, ask for a single section
+# scan instead. Cheaper than hundreds of requests, and strictly more thorough.
+PLEX_MAX_TARGETED_SCANS = int(os.environ.get("PLEX_MAX_TARGETED_SCANS", "20"))
+
 
 # ============================================================================
 # Logging Setup
