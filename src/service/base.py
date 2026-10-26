@@ -806,7 +806,24 @@ class BaseCleanService(ABC):
         
         # Report large files that are transcode candidates
         self._report_large_files(root)
-        
+
+        # Tell Plex which directories changed. Deliberately the last thing the
+        # run does, and only after the journal is on disk: a rescan is a
+        # courtesy to the media server, and must never be able to cost the undo
+        # record or fail a run that has already finished moving files. No-op
+        # without PLEX_TOKEN, and never raises. See src/plex.py.
+        # Guarded here as well as inside notify_paths, on purpose. That function
+        # promises not to raise, but this is the last statement of a program
+        # that has already moved files on a real volume, and the promise covers
+        # neither the lazy import above it nor a bug in the guard itself. Two
+        # cheap lines buy independence from both.
+        if commit and journal:
+            try:
+                from ..plex import notify_paths, paths_from_journal
+                notify_paths(paths_from_journal(journal), logger=self._logger)
+            except Exception as e:
+                self._logger.warning("Plex: rescan skipped (%s)", e)
+
         self._logger.info("END")
     
     def _process_audio_tracks(
