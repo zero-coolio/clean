@@ -169,6 +169,12 @@ QBIT_USER = os.environ.get("QBIT_USER") or None
 QBIT_PASS = os.environ.get("QBIT_PASS") or None
 QBIT_TIMEOUT = float(os.environ.get("QBIT_TIMEOUT", "5"))
 
+# Undo-journal retention (src/journal_retention.py). Each committed run trashes
+# its own service's journals older than this many days from the root it
+# cleaned. Steve, 2026-10-28: "only keep 3 days worth of undos". 0 turns
+# retention off.
+JOURNAL_KEEP_DAYS = float(os.environ.get("JOURNAL_KEEP_DAYS", "3"))
+
 # Plex rescan notification (see src/plex.py). Self-gating: with no PLEX_TOKEN
 # the notification is a no-op, exactly as TMDB lookup is without TMDB_API_KEY,
 # so this costs nothing until a token is put in the gitignored cleanMedia/.env.
