@@ -209,3 +209,9 @@ class TestDefaultIsTheConservativeRule:
         d = choose_winner(c(1080, mtime=1.0), c(720, mtime=999.0))
         assert d.winner == "source"
         assert "higher resolution" in d.reason
+
+
+def test_movies_use_newest_rule():
+    """Steve, 2026-10-21: "always keep the newer file", movies included (CLEAN-25)."""
+    from src.service.clean_movie_service import CleanMovieService
+    assert CleanMovieService.CONFLICT_RULE is ConflictRule.NEWEST

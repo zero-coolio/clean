@@ -314,12 +314,9 @@ class CleanMovieService(BaseCleanService):
 
     SERVICE_NAME = "clean-movie"
 
-    # A second copy of a MOVIE is almost always a different rip of different
-    # quality, arriving in whatever order a tracker happened to seed it, so
-    # recency means nothing. Stated explicitly rather than inherited: this is
-    # the rule Steve asked for by library, not a default worth leaving implicit.
-    # (CLEAN-21)
-    CONFLICT_RULE = ConflictRule.QUALITY
+    # Steve, 2026-10-21: "always keep the newer file". Applies to movies too,
+    # which reverses the movie half of CLEAN-21. (CLEAN-25)
+    CONFLICT_RULE = ConflictRule.NEWEST
 
     def _needs_processing(self, rel_path) -> bool:
         """Structural work selection for the movie layout. See intake_filter."""
