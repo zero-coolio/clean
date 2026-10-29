@@ -23,8 +23,9 @@ files on a real media volume, unattended. It is therefore built to be ignorable:
 
   * Nothing here raises. Every entry point swallows everything, including
     timeouts, bad XML, a moved server and a wrong token, and logs instead.
-  * It is self-gating. No token means no-op, the same way TMDB lookup gates on
-    TMDB_API_KEY, so adding this file changes nothing until a token is set.
+  * It needs no setup. The token comes from PLEX_TOKEN if set, otherwise from
+    Plex's own preferences on this machine, so nothing has to be copied and
+    there is no second copy to drift. With neither available it is a no-op.
   * It is time-bounded. A whole notification pass gives up after
     PLEX_NOTIFY_BUDGET seconds no matter how many directories were touched.
   * It reads. The only request it ever issues is a scan trigger; it never
@@ -53,6 +54,35 @@ from .config import (
 )
 
 _log = get_logger("plex")
+
+
+def _token_from_plex_prefs() -> str | None:
+    """The token Plex itself already stores on this machine, or None.
+
+    Plex keeps it in its own preferences, so there is no reason to copy it into
+    cleanMedia/.env and then maintain two copies that can drift. Reading the
+    original means a token rotated in Plex is picked up with no action here.
+
+    Narrow by design: this is the Mac that runs the server, the file is the
+    user's own, and plistlib reads it directly with no subprocess. If Plex ever
+    moves to another host, set PLEX_TOKEN (and PLEX_BASE_URL) explicitly and
+    this is never consulted.
+    """
+    try:
+        import plistlib
+
+        prefs = Path.home() / "Library/Preferences/com.plexapp.plexmediaserver.plist"
+        if not prefs.exists():
+            return None
+        return plistlib.loads(prefs.read_bytes()).get("PlexOnlineToken") or None
+    except Exception as e:
+        _log.debug("Plex: could not read the token from Plex's preferences: %s", e)
+        return None
+
+
+def resolve_token() -> str | None:
+    """An explicit PLEX_TOKEN if set, otherwise Plex's own stored token."""
+    return PLEX_TOKEN or _token_from_plex_prefs()
 
 
 def _get(url: str, timeout: float) -> bytes | None:
@@ -151,8 +181,12 @@ def notify_paths(paths, logger=None) -> None:
 
 
 def _notify(paths, log) -> None:
-    if not PLEX_TOKEN:
-        log.debug("Plex: no PLEX_TOKEN, skipping rescan (set it in cleanMedia/.env)")
+    token = resolve_token()
+    if not token:
+        log.debug(
+            "Plex: no token (set PLEX_TOKEN in cleanMedia/.env, or let Plex's "
+            "own preferences supply it), skipping rescan"
+        )
         return
 
     directories = _directories(paths)
@@ -161,7 +195,7 @@ def _notify(paths, log) -> None:
 
     deadline = time.monotonic() + PLEX_NOTIFY_BUDGET
 
-    sections = fetch_sections(PLEX_TOKEN)
+    sections = fetch_sections(token)
     if not sections:
         log.warning("Plex: no sections returned, skipping rescan")
         return
@@ -180,10 +214,10 @@ def _notify(paths, log) -> None:
         if time.monotonic() > deadline:
             log.warning("Plex: notification budget spent, section %s not scanned", key)
             return
-        _scan_section(key, dirs, deadline, log)
+        _scan_section(key, dirs, token, deadline, log)
 
 
-def _scan_section(key: str, dirs: list[str], deadline: float, log) -> None:
+def _scan_section(key: str, dirs: list[str], token: str, deadline: float, log) -> None:
     """Scan one section: per-directory while that is cheap, else section-wide.
 
     A run that reorganizes hundreds of folders would otherwise issue hundreds of
@@ -191,7 +225,7 @@ def _scan_section(key: str, dirs: list[str], deadline: float, log) -> None:
     so the fallback is a widening, never a loss of coverage.
     """
     if len(dirs) > PLEX_MAX_TARGETED_SCANS:
-        if _get(_url(f"/library/sections/{key}/refresh", PLEX_TOKEN), PLEX_TIMEOUT) is None:
+        if _get(_url(f"/library/sections/{key}/refresh", token), PLEX_TIMEOUT) is None:
             log.warning("Plex: section %s full scan failed", key)
         else:
             log.info("Plex: section %s full scan (%d directories touched)", key, len(dirs))
@@ -205,7 +239,7 @@ def _scan_section(key: str, dirs: list[str], deadline: float, log) -> None:
                 scanned, len(dirs), key,
             )
             return
-        url = _url(f"/library/sections/{key}/refresh", PLEX_TOKEN, path=directory)
+        url = _url(f"/library/sections/{key}/refresh", token, path=directory)
         if _get(url, PLEX_TIMEOUT) is None:
             log.warning("Plex: scan failed for %s", directory)
         else:
