@@ -157,12 +157,15 @@ def test_paths_outside_plex_are_not_requested(calls):
     assert scans(calls) == []
 
 
-def test_no_token_means_no_request_at_all(monkeypatch):
-    """Self-gating, like TMDB. Landing this module changes nothing until a
-    token is set, so it cannot alter the watcher's behaviour by existing."""
+def test_no_token_anywhere_means_no_request_at_all(monkeypatch):
+    """With neither an explicit token nor one in Plex's preferences there is
+    nothing to authenticate with, so the pass is a no-op rather than a run of
+    401s. Both sources are stubbed: without the second stub this test passes or
+    fails depending on whether the machine happens to run Plex."""
     seen = []
     monkeypatch.setattr(plex, "_get", lambda url, timeout: seen.append(url))
     monkeypatch.setattr(plex, "PLEX_TOKEN", None)
+    monkeypatch.setattr(plex, "_token_from_plex_prefs", lambda: None)
     plex.notify_paths(["/Volumes/Seagate/seagate-movie/F1 (2025)"])
     assert seen == []
 
@@ -293,3 +296,65 @@ class TestRunNotifies:
 
         dest = root / "Reacher" / "Season 04" / "Reacher.S04E01.mkv"
         assert dest.exists(), "the move must survive a broken notifier"
+
+
+# --- where the token comes from ---------------------------------------------
+
+class TestTokenResolution:
+    """Plex already stores a token on the machine that runs it, so CleanMedia
+    reads that rather than keeping a second copy in .env that can drift."""
+
+    def test_an_explicit_token_wins(self, monkeypatch):
+        """So a non-local Plex, or a deliberately scoped token, is still
+        possible: set PLEX_TOKEN and the preferences are never consulted."""
+        consulted = []
+        monkeypatch.setattr(plex, "PLEX_TOKEN", "explicit")
+        monkeypatch.setattr(plex, "_token_from_plex_prefs",
+                            lambda: consulted.append(1) or "from-prefs")
+        assert plex.resolve_token() == "explicit"
+        assert consulted == [], "preferences must not even be read"
+
+    def test_plex_preferences_supply_it_otherwise(self, monkeypatch):
+        monkeypatch.setattr(plex, "PLEX_TOKEN", None)
+        monkeypatch.setattr(plex, "_token_from_plex_prefs", lambda: "from-prefs")
+        assert plex.resolve_token() == "from-prefs"
+
+    def test_neither_is_not_an_error(self, monkeypatch):
+        monkeypatch.setattr(plex, "PLEX_TOKEN", None)
+        monkeypatch.setattr(plex, "_token_from_plex_prefs", lambda: None)
+        assert plex.resolve_token() is None
+
+    def test_a_missing_preferences_file_is_not_an_error(self, monkeypatch, tmp_path):
+        """Plex not installed, or installed elsewhere."""
+        monkeypatch.setattr(plex.Path, "home", staticmethod(lambda: tmp_path))
+        assert plex._token_from_plex_prefs() is None
+
+    def test_an_unreadable_preferences_file_is_not_an_error(self, monkeypatch, tmp_path):
+        """Corrupt, truncated, or a format plistlib will not accept. This runs
+        at the end of a clean run, so it may not raise whatever it finds."""
+        prefs = tmp_path / "Library/Preferences"
+        prefs.mkdir(parents=True)
+        (prefs / "com.plexapp.plexmediaserver.plist").write_bytes(b"not a plist")
+        monkeypatch.setattr(plex.Path, "home", staticmethod(lambda: tmp_path))
+        assert plex._token_from_plex_prefs() is None
+
+    def test_preferences_without_a_token_key(self, monkeypatch, tmp_path):
+        """A server that has never been claimed has the file but no token."""
+        import plistlib
+        prefs = tmp_path / "Library/Preferences"
+        prefs.mkdir(parents=True)
+        (prefs / "com.plexapp.plexmediaserver.plist").write_bytes(
+            plistlib.dumps({"FriendlyName": "mini", "PlexOnlineToken": ""})
+        )
+        monkeypatch.setattr(plex.Path, "home", staticmethod(lambda: tmp_path))
+        assert plex._token_from_plex_prefs() is None
+
+    def test_a_real_looking_preferences_file_is_read(self, monkeypatch, tmp_path):
+        import plistlib
+        prefs = tmp_path / "Library/Preferences"
+        prefs.mkdir(parents=True)
+        (prefs / "com.plexapp.plexmediaserver.plist").write_bytes(
+            plistlib.dumps({"PlexOnlineToken": "abc123", "FriendlyName": "mini"})
+        )
+        monkeypatch.setattr(plex.Path, "home", staticmethod(lambda: tmp_path))
+        assert plex._token_from_plex_prefs() == "abc123"
