@@ -110,3 +110,9 @@ def _no_leftover_downloaded_marks():
     downloaded_marks._pending.clear()
     yield
     downloaded_marks._pending.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_no_match_dates(monkeypatch):
+    """The dated no-match map is module state beside the name cache."""
+    monkeypatch.setattr("src.tvmaze._no_match_at", {}, raising=False)

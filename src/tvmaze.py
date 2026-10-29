@@ -87,6 +87,13 @@ _SHARED_CACHE_PATH = Path(
 _cache: dict[str, tuple[str, str] | None] = {}
 _cache_dirty = False
 
+# Day each cached no-match (None) was recorded, "YYYY-MM-DD". A no-match is
+# re-asked after _NO_MATCH_TTL_DAYS: TVMaze adds shows (Outside (2026),
+# Banksters (2026) were cached as no-match before TVMaze listed them), and an
+# undated legacy null is treated as already expired.
+_no_match_at: dict[str, str] = {}
+_NO_MATCH_TTL_DAYS = 7
+
 # query_key → TVMaze show id. Populated by lookup_show on a match and persisted
 # to `.tvmaze_id_cache.json` (sibling of `_CACHE_PATH`). Persistence matters for
 # the id-based collapse in clean_service: lookup_show early-returns on a warm
@@ -131,8 +138,15 @@ def _load_cache() -> None:
     if _CACHE_PATH.exists():
         try:
             raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
-            # Values are stored as [name, year] or null
-            _cache = {k: (tuple(v) if v else None) for k, v in raw.items()}
+            # Values: [name, year] = match; {"noMatch": "YYYY-MM-DD"} = dated
+            # no-match; legacy null = undated no-match, dropped so it's re-asked.
+            _cache = {}
+            for k, v in raw.items():
+                if isinstance(v, dict) and v.get("noMatch"):
+                    _cache[k] = None
+                    _no_match_at[k] = v["noMatch"]
+                elif v:
+                    _cache[k] = tuple(v)
             _log.debug("TVMaze: loaded %d name-cache entries from %s", len(_cache), _CACHE_PATH)
         except Exception as e:
             # Corrupt/unreadable cache is non-fatal — we just start cold and
@@ -145,7 +159,11 @@ def _save_cache() -> None:
     if not _cache_dirty:
         return
     try:
-        serializable = {k: list(v) if v else None for k, v in _cache.items()}
+        today = datetime.date.today().isoformat()
+        serializable = {
+            k: list(v) if v else {"noMatch": _no_match_at.get(k, today)}
+            for k, v in _cache.items()
+        }
         _atomic_write_text(_CACHE_PATH, json.dumps(serializable, indent=2, ensure_ascii=False))
         _cache_dirty = False
     except Exception as e:
@@ -368,6 +386,16 @@ def _query_variants(name: str) -> list[str]:
             if tail not in variants:
                 variants.append(tail)
 
+    # Undo our own folder naming: _sanitize_name writes TVMaze's
+    # "Alien: Earth" as "Alien - Earth", and searching TVMaze for the dash form
+    # finds nothing, so 15 shows (Star Trek - Picard, NCIS - Origins, ...) never
+    # resolved. Tried LAST, so a name that already matches is unaffected.
+    for v in list(variants):
+        if " - " in v:
+            colon = v.replace(" - ", ": ")
+            if colon not in variants:
+                variants.append(colon)
+
     return variants
 
 
@@ -469,7 +497,10 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
     """
     cache_key = name.lower().strip()
     if cache_key in _cache:
-        return _cache[cache_key]
+        if _cache[cache_key] is not None or not _no_match_expired(cache_key):
+            return _cache[cache_key]
+        _log.info("TVMaze: re-checking %r (no-match from %s has expired)", name, _no_match_at.get(cache_key))
+        del _cache[cache_key]
 
     year_m = _RE_YEAR.search(name)
     year = year_m.group(1) if year_m else None
@@ -516,9 +547,22 @@ def lookup_show(name: str, logger=None) -> tuple[str, str] | None:
         else:
             logger.warning("TVMaze: no match for '%s'", name)
     _cache[cache_key] = None
+    _no_match_at[cache_key] = datetime.date.today().isoformat()
     _cache_dirty = True
     _save_cache()
     return None
+
+
+def _no_match_expired(cache_key: str, today: datetime.date | None = None) -> bool:
+    """True when a cached no-match is older than the TTL (or undated)."""
+    when = _no_match_at.get(cache_key)
+    if not when:
+        return True
+    try:
+        age = ((today or datetime.date.today()) - datetime.date.fromisoformat(when)).days
+    except ValueError:
+        return True
+    return age >= _NO_MATCH_TTL_DAYS
 
 
 def _resolve_show_id(name: str, logger=None) -> int | None:
