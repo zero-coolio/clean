@@ -11,7 +11,8 @@ from datetime import datetime
 from logging import Logger
 from pathlib import Path
 
-from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES
+from ..config import VIDEO_EXT, SAMPLE_PATTERNS, SAMPLE_MAX_BYTES, JOURNAL_KEEP_DAYS
+from ..journal_retention import prune_journals
 from ..audio_tracks import check_mkvtoolnix_installed, set_track_defaults
 from ..conflict_policy import Candidate, ConflictRule, choose_winner
 from ..part_marker import part_number
@@ -797,6 +798,12 @@ class BaseCleanService(ABC):
                 for entry in journal:
                     f.write(json.dumps(entry) + "\n")
             self._logger.info("JOURNAL: %s", journal_path.resolve())
+
+        # Undo-journal retention: only committed runs prune, so a dry run
+        # never touches anything. Runs after this run's journal is written;
+        # that one is seconds old and always kept.
+        if commit:
+            prune_journals(root, (self.SERVICE_NAME,), JOURNAL_KEEP_DAYS, commit, self._logger)
         
         # Report unexpected files
         if unexpected:
